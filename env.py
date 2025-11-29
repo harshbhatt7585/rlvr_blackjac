@@ -206,19 +206,16 @@ class BlackjackEnv:
                 info["result"] = "bust"
                 info["explanation"] = f"Player busts with {self.player_sum}"
 
-        else:  # Stand (action == 0)
-            # Dealer plays
+        else: 
             self.dealer_sum, _ = self._calculate_hand(self.dealer_cards)
             info["dealer_natural"] = self._is_natural(self.dealer_cards)
 
-            # Dealer hits until reaching 17 or higher
             while self.dealer_sum < 17:
                 self.dealer_cards.append(self._draw_card())
                 self.dealer_sum, _ = self._calculate_hand(self.dealer_cards)
 
             self.done = True
 
-            # Determine winner
             dealer_bust = self._is_bust(self.dealer_sum)
             player_natural = info["player_natural"]
             dealer_natural = info["dealer_natural"]
@@ -244,7 +241,6 @@ class BlackjackEnv:
                 info["result"] = "lose"
                 info["explanation"] = f"Dealer wins ({self.dealer_sum} vs {self.player_sum})"
 
-            # Add dealer's final hand to info
             dealer_cards_str = ", ".join(self._card_to_string(c) for c in self.dealer_cards)
             info["dealer_hand"] = f"[{dealer_cards_str}] (Total: {self.dealer_sum})"
 
