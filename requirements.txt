@@ -1,0 +1,21 @@
+# Core dependencies
+torch>=2.0.0
+transformers>=4.36.0
+datasets>=2.14.0
+accelerate>=0.25.0
+peft>=0.7.0  # For LoRA fine-tuning
+
+# Environment
+numpy>=1.24.0
+
+# Training utilities
+tqdm>=4.65.0
+scikit-learn>=1.3.0
+wandb>=0.16.0  # For experiment tracking and logging
+
+# Optional: For better performance
+bitsandbytes>=0.41.0  # For 8-bit quantization
+sentencepiece>=0.1.99  # For tokenization
+
+# Development
+pytest>=7.4.0
