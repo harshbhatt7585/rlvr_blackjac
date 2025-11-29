@@ -93,6 +93,7 @@ class Episode:
     responses: List[str]  # Model responses
     rewards: List[float]  # Intermediate rewards (0 until final)
     total_reward: float  # Final episode reward
+    reasonings: List[str]  # Reasoning for each action
 
 
 class RLVRTrainer:
@@ -166,7 +167,7 @@ class RLVRTrainer:
         prompts = []
         responses = []
         rewards = []
-
+        reasonings = []
         done = False
 
         while not done:
@@ -211,6 +212,8 @@ class RLVRTrainer:
                 action = None
                 reasoning = None
 
+            
+
             print(f"Action: {action}")
             print(f"Reasoning: {reasoning}")
 
@@ -223,8 +226,10 @@ class RLVRTrainer:
             # Store trajectory
             states.append(obs['description'])
             actions.append(action)
+            reasonings.append(reasoning)
             prompts.append(prompt)
             responses.append(response_str)
+            
 
             # Take action
             obs, reward, done, info = self.env.step(action)
@@ -295,12 +300,7 @@ class RLVRTrainer:
                 # Create target response in JSON format with reasoning
                 action = episode.actions[i]
                 state = episode.states[i]
-
-                # Generate simple reasoning based on the action
-                if action == 1:  # Hit
-                    reasoning = "My hand value is low, I should hit to get closer to 21."
-                else:  # Stand
-                    reasoning = "My hand value is good enough, I should stand to avoid busting."
+                reasoning = episode.reasonings[i]
 
                 # Create JSON formatted target
                 target = json.dumps({
