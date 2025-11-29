@@ -308,13 +308,15 @@ Available actions:
 0: Stand (end your turn and let the dealer play)
 1: Hit (draw another card)
 
-What action do you choose? Respond with just the number (0 or 1) and explain your reasoning.
+What action do you choose? Respond in JSON format with your action and reasoning.
 
-Response in json format. Do not provide any other text. For example:
+Example response:
+```json
 {{
-    "action": <action>,
-    "reasoning": <reasoning>
+    "action": 0,
+    "reasoning": "Your reasoning here"
 }}
+```
 """
         return prompt
 

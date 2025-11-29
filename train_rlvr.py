@@ -159,15 +159,6 @@ class RLVRTrainer:
 
 
     def collect_episode(self, temperature: float = 0.7) -> Episode:
-        """
-        Collect a single episode by having the model play Blackjack.
-
-        Args:
-            temperature: Sampling temperature for generation
-
-        Returns:
-            Episode object containing trajectory
-        """
         obs = self.env.reset()
 
         states = []
@@ -192,8 +183,8 @@ class RLVRTrainer:
             with torch.no_grad():
                 outputs = self.model.generate(
                     **inputs,
-                    max_new_tokens=100,
-                    temperature=0.2,
+                    max_new_tokens=512,
+                    temperature=temperature,
                     do_sample=True,
                     pad_token_id=self.tokenizer.pad_token_id
                 )
@@ -202,11 +193,19 @@ class RLVRTrainer:
                 skip_special_tokens=True
             )
             print(f"Response: {response}")
+
+            response_str = response  # Keep original string
             try:
-                    
-                response = json.loads(response.strip())
-                action = response['action']
-                reasoning = response['reasoning']
+                # Strip markdown code blocks if present
+                cleaned = response.strip()
+                if cleaned.startswith('```'):
+                    # Remove ```json or ``` at start and ``` at end
+                    cleaned = cleaned.split('\n', 1)[1] if '\n' in cleaned else cleaned[3:]
+                    cleaned = cleaned.rsplit('```', 1)[0] if '```' in cleaned else cleaned
+
+                parsed = json.loads(cleaned.strip())
+                action = parsed['action']
+                reasoning = parsed['reasoning']
             except Exception as e:
                 print(f"Error parsing response: {e}")
                 action = None
@@ -215,17 +214,17 @@ class RLVRTrainer:
             print(f"Action: {action}")
             print(f"Reasoning: {reasoning}")
 
-        
+
             # If invalid action, default to standing
             if action is None:
                 action = 0
-                response += f" [DEFAULTED TO STAND]"
+                response_str += f" [DEFAULTED TO STAND]"
 
             # Store trajectory
             states.append(obs['description'])
             actions.append(action)
             prompts.append(prompt)
-            responses.append(response)
+            responses.append(response_str)
 
             # Take action
             obs, reward, done, info = self.env.step(action)
@@ -243,15 +242,7 @@ class RLVRTrainer:
         )
 
     def collect_rollouts(self, num_episodes: int) -> List[Episode]:
-        """
-        Collect multiple episodes.
 
-        Args:
-            num_episodes: Number of episodes to collect
-
-        Returns:
-            List of Episode objects
-        """
         episodes = []
         action_extraction_failures = 0
         total_actions = 0
@@ -301,10 +292,21 @@ class RLVRTrainer:
                 weight = 1.0
 
             for i in range(len(episode.actions)):
-                # Create target response (action + brief reasoning)
+                # Create target response in JSON format with reasoning
                 action = episode.actions[i]
-                action_name = "Stand" if action == 0 else "Hit"
-                target = f"{action}"
+                state = episode.states[i]
+
+                # Generate simple reasoning based on the action
+                if action == 1:  # Hit
+                    reasoning = "My hand value is low, I should hit to get closer to 21."
+                else:  # Stand
+                    reasoning = "My hand value is good enough, I should stand to avoid busting."
+
+                # Create JSON formatted target
+                target = json.dumps({
+                    "action": action,
+                    "reasoning": reasoning
+                })
 
                 # Create full training text (prompt + response)
                 full_text = episode.prompts[i] + target
@@ -337,7 +339,7 @@ class RLVRTrainer:
                 examples['text'],
                 truncation=True,
                 max_length=512,
-                padding='max_length'
+                padding=False  # Use dynamic padding via data collator
             )
 
         tokenized_dataset = dataset.map(tokenize_function, batched=True)

@@ -28,13 +28,13 @@ def train_with_lora():
 
         # Training settings - standard
         num_iterations=10,
-        episodes_per_iteration=100,
-        batch_size=4,
+        episodes_per_iteration=50,
+        batch_size=8,
         learning_rate=2e-5,
 
         # Evaluation
         eval_frequency=1,
-        eval_episodes=100,
+        eval_episodes=30,
 
         output_dir="./checkpoints",
         log_file="./training_log.json"
