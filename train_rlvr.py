@@ -37,6 +37,8 @@ from peft import (
     PeftModel
 )
 
+
+
 from env import BlackjackEnv
 
 
@@ -94,6 +96,7 @@ class Episode:
     rewards: List[float]  # Intermediate rewards (0 until final)
     total_reward: float  # Final episode reward
     reasonings: List[str]  # Reasoning for each action
+    logprobs: List[float]  # Log probabilities of each action
 
 
 class RLVRTrainer:
@@ -141,23 +144,8 @@ class RLVRTrainer:
 
             # Auto-detect target modules if not specified
             if config.lora_target_modules is None:
-                # Detect model architecture and set appropriate target modules
-                model_name_lower = config.model_name.lower()
-
-                if "gemma" in model_name_lower:
-                    config.lora_target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
-                    print("  Detected Gemma model - using standard attention projections")
-                elif "deepseek" in model_name_lower or "qwen" in model_name_lower:
-                    # DeepSeek and Qwen models use these module names
-                    config.lora_target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
-                    print("  Detected DeepSeek/Qwen model - using standard attention projections")
-                elif "llama" in model_name_lower:
-                    config.lora_target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
-                    print("  Detected LLaMA model - using standard attention projections")
-                else:
-                    # Default fallback
-                    config.lora_target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
-                    print("  Using default attention projections (q/k/v/o_proj)")
+                config.lora_target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
+                print("  Using default attention projections (q/k/v/o_proj)")
 
             lora_config = LoraConfig(
                 r=config.lora_r,
@@ -171,13 +159,11 @@ class RLVRTrainer:
             self.model = get_peft_model(self.model, lora_config)
             self.model.print_trainable_parameters()
 
-        # Training history
+
         self.history = []
 
-        # Create output directory
         os.makedirs(config.output_dir, exist_ok=True)
 
-        # Initialize Weights & Biases
         if config.use_wandb:
             wandb.init(
                 project=config.wandb_project,
@@ -199,6 +185,7 @@ class RLVRTrainer:
         rewards = []
         reasonings = []
         done = False
+        logprobs = []
 
         while not done:
             prompt = self.env.get_prompt_for_llm()
@@ -225,7 +212,7 @@ class RLVRTrainer:
             with torch.no_grad():
                 outputs = self.model.generate(
                     **inputs,
-                    max_new_tokens=756,  # Reduced from 512 for faster generation
+                    max_new_tokens=10,  # Reduced from 512 for faster generation
                     temperature=temperature,
                     do_sample=temperature > 0.0,  # Only sample if temperature > 0
                     top_p=0.9,  # Nucleus sampling for better quality
@@ -261,18 +248,15 @@ class RLVRTrainer:
             print(f"Action: {action}")
             print(f"Reasoning: {reasoning}")
 
-
-            # Store trajectory
             states.append(obs['description'])
             actions.append(action)
             reasonings.append(reasoning)
             prompts.append(prompt)
             responses.append(response_str)
             
-
-            # Take action
             obs, reward, done, info = self.env.step(action)
             rewards.append(reward)
+            logprobs.append(outputs.logprobs)
 
         total_reward = sum(rewards)
 
@@ -283,7 +267,8 @@ class RLVRTrainer:
             responses=responses,
             rewards=rewards,
             total_reward=total_reward,
-            reasonings=reasonings
+            reasonings=reasonings,
+            logprobs=logprobs
         )
 
     def collect_rollouts(self, num_episodes: int) -> List[Episode]:
@@ -435,8 +420,9 @@ class RLVRTrainer:
 
         return metrics
 
-    def train(self):
 
+    def train(self):
+        """Train using RLVR (supervised fine-tuning on good trajectories)."""
         for iteration in range(1, self.config.num_iterations + 1):
             print(f"\n{'='*60}")
             print(f"Iteration {iteration}/{self.config.num_iterations}")
@@ -551,7 +537,6 @@ class RLVRTrainer:
             'final': True
         })
 
-        # Log final metrics to wandb
         if self.config.use_wandb:
             wandb.log({
                 "iteration": self.config.num_iterations,
@@ -564,7 +549,6 @@ class RLVRTrainer:
                 "final/max_reward": final_metrics['max_reward'],
             })
 
-        # Save final model and history
         self.save_checkpoint(os.path.join(self.config.output_dir, "final_model"))
         self.save_history()
 
@@ -574,7 +558,6 @@ class RLVRTrainer:
         print(f"Training history saved to: {self.config.log_file}")
         print('='*60)
 
-        # Finish wandb run
         if self.config.use_wandb:
             wandb.finish()
             print("W&B run finished")
@@ -588,15 +571,12 @@ class RLVRTrainer:
         print(f"  Min/Max Reward: {metrics['min_reward']:.1f} / {metrics['max_reward']:.1f}")
 
     def save_checkpoint(self, path: str):
-        """Save model checkpoint (LoRA adapters if using LoRA, full model otherwise)."""
         print(f"Saving checkpoint to {path}...")
 
         if self.config.use_lora:
-            # Save LoRA adapters only
             self.model.save_pretrained(path)
             print(f"  LoRA adapters saved (trainable params only)")
         else:
-            # Save full model
             self.model.save_pretrained(path)
             print(f"  Full model saved")
 
