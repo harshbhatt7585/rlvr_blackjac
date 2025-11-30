@@ -129,6 +129,7 @@ class BlackjackEnv:
             raise ValueError("Episode is done. Call reset() to start a new episode.")
 
         reward = 0.0
+        info = {}
 
         if action == 1:  
             new_card = self._draw_card()
@@ -157,8 +158,6 @@ class BlackjackEnv:
                 reward = 1.0
             else:
                 reward = -1.0
-        
-        info = {}
 
         new_state = self._get_observation()
         return new_state, reward, self.done, info
@@ -195,11 +194,11 @@ Available actions:
 
 What action do you choose? Respond in JSON format with your action and reasoning.
 
-Example response:
+response format:
 ```json
 {{
-    "action": 0,
-    "reasoning": "I have 18 which is a strong hand. Hitting risks busting, so I should stand."
+    "action": <0 or 1>,
+    "reasoning": <string describing your reasoning under 50 words>
 }}
 ```
 """

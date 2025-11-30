@@ -15,7 +15,7 @@ import os
 import json
 import torch
 import numpy as np
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Optional
 from dataclasses import dataclass, asdict
 from tqdm import tqdm
 import re
