@@ -239,7 +239,6 @@ class RLVRTrainer:
             try:
                 # Strip markdown code blocks if present
                 cleaned = response.split('</think>')[-1].strip()
-                print(f"Cleaned: {cleaned}")
                 if cleaned.startswith('```'):
                     # Remove ```json or ``` at start and ``` at end
                     cleaned = cleaned.split('\n', 1)[1] if '\n' in cleaned else cleaned[3:]
@@ -291,21 +290,13 @@ class RLVRTrainer:
         print(f"Collecting {num_episodes} episodes...")
         for _ in tqdm(range(num_episodes)):
             episode = self.collect_episode(temperature=self.config.temperature)
+            print(f"Episode: {episode}")
             episodes.append(episode)
 
 
         return episodes
 
     def create_training_dataset(self, episodes: List[Episode]) -> Dataset:
-        """
-        Create a training dataset from episodes.
-
-        Args:
-            episodes: List of Episode objects
-
-        Returns:
-            Hugging Face Dataset for training
-        """
         training_examples = []
 
         for episode in episodes:

@@ -158,6 +158,7 @@ class BlackjackEnv:
             else:
                 reward = -1.0
         
+        info = {}
 
         new_state = self._get_observation()
         return new_state, reward, self.done, info
