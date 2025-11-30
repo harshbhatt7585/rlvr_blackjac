@@ -285,6 +285,7 @@ class RLVRTrainer:
                 outputs[0][inputs['input_ids'].shape[1]:],
                 skip_special_tokens=True
             )
+            
 
             conversation.append({"role": "assistant", "content": response})
 
@@ -298,6 +299,8 @@ class RLVRTrainer:
                 parsed = json.loads(cleaned.strip())
                 action = parsed.get('action')
                 reasoning = parsed.get('reasoning')
+
+                self.logger.log(f"Action: {action}, Reasoning: {reasoning}")
             except Exception:
                 self.logger.debug("Error parsing response: %s", response)
                 action = None
