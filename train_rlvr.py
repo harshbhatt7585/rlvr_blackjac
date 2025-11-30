@@ -432,39 +432,7 @@ class RLVRTrainer:
         return metrics
 
     def train(self):
-        """Main training loop."""
-        print("="*60)
-        print("Starting RLVR Training for Blackjack")
-        print("="*60)
-        print(f"Model: {self.config.model_name}")
-        print(f"Iterations: {self.config.num_iterations}")
-        print(f"Episodes per iteration: {self.config.episodes_per_iteration}")
-        print("="*60)
 
-        # Initial evaluation
-        print("\nInitial Evaluation:")
-        initial_metrics = self.evaluate(self.config.eval_episodes)
-        self._print_metrics(initial_metrics)
-
-        self.history.append({
-            'iteration': 0,
-            'metrics': initial_metrics
-        })
-
-        # Log initial metrics to wandb
-        if self.config.use_wandb:
-            wandb.log({
-                "iteration": 0,
-                "eval/mean_reward": initial_metrics['mean_reward'],
-                "eval/std_reward": initial_metrics['std_reward'],
-                "eval/win_rate": initial_metrics['win_rate'],
-                "eval/lose_rate": initial_metrics['lose_rate'],
-                "eval/draw_rate": initial_metrics['draw_rate'],
-                "eval/min_reward": initial_metrics['min_reward'],
-                "eval/max_reward": initial_metrics['max_reward'],
-            })
-
-        # Training loop
         for iteration in range(1, self.config.num_iterations + 1):
             print(f"\n{'='*60}")
             print(f"Iteration {iteration}/{self.config.num_iterations}")
@@ -533,10 +501,8 @@ class RLVRTrainer:
                     "dataset/num_episodes": len(episodes),
                 })
 
-            # Train on dataset
             self.train_on_dataset(dataset)
 
-            # Evaluate
             if iteration % self.config.eval_frequency == 0:
                 print(f"\nEvaluation after iteration {iteration}:")
                 metrics = self.evaluate(self.config.eval_episodes)
@@ -547,7 +513,6 @@ class RLVRTrainer:
                     'metrics': metrics
                 })
 
-                # Log evaluation metrics to wandb
                 if self.config.use_wandb:
                     wandb.log({
                         "iteration": iteration,
