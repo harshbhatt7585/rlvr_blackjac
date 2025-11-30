@@ -140,6 +140,10 @@ class BlackjackEnv:
                 self.done = True
                 reward = -1.0
                 info["result"] = "bust"
+            
+            if self.player_sum == 21:
+                self.done = True
+                reward = +1.0
 
         else: 
             self.dealer_sum, _ = self._calculate_hand(self.dealer_cards)
