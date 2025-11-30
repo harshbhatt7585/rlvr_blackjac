@@ -387,6 +387,7 @@ class RLVRTrainer:
 
         return train_result
 
+
     def evaluate(self, num_episodes: int = 100) -> Dict:
         """
         Evaluate current model performance.
@@ -430,6 +431,17 @@ class RLVRTrainer:
 
             # Collect rollouts
             episodes = self.collect_rollouts(self.config.episodes_per_iteration)
+
+
+            avg_reward = np.mean([ep.total_reward for ep in episodes])
+            
+
+            current_episode = self.collect_episode(temperature=0.3)
+            reward = current_episode.total_reward
+            advantage = reward - avg_reward
+
+            print(f"Advantage: {advantage}")
+            
 
             # Print rollout statistics
             rewards = [ep.total_reward for ep in episodes]
