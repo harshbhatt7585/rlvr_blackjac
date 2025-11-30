@@ -33,13 +33,6 @@ class BlackjackEnv:
     """
 
     def __init__(self, natural_reward: float = 1.5, seed: Optional[int] = None):
-        """
-        Initialize the Blackjack environment.
-
-        Args:
-            natural_reward: Reward multiplier for natural blackjack (default 1.5)
-            seed: Random seed for reproducibility
-        """
         self.natural_reward = natural_reward
         self.action_space_n = 2  # 0: Stand, 1: Hit
 
@@ -132,28 +125,8 @@ class BlackjackEnv:
             return str(card)
 
     def step(self, action: int) -> Tuple[Dict, float, bool, Dict]:
-        """
-        Execute one step in the environment.
-
-        Args:
-            action: 0 for Stand, 1 for Hit
-
-        Returns:
-            Tuple of (observation, reward, done, info)
-            - observation: Current state
-            - reward: Reward received
-            - done: Whether episode is finished
-            - info: Additional information
-        """
         if self.done:
             raise ValueError("Episode is done. Call reset() to start a new episode.")
-
-
-        info = {
-            "player_natural": self._is_natural(self.player_cards),
-            "dealer_natural": False,
-            "result": None
-        }
 
         reward = 0.0
 
@@ -210,24 +183,7 @@ class BlackjackEnv:
             print(output)
             return None
 
-    def get_action_mask(self) -> List[bool]:
-        """
-        Get valid actions in current state.
-
-        Returns:
-            List of booleans indicating valid actions
-        """
-        if self.done:
-            return [False, False]
-        return [True, True]  # Both stand and hit are always valid when not done
-
     def get_prompt_for_llm(self) -> str:
-        """
-        Generate a prompt suitable for LLM decision making.
-
-        Returns:
-            String prompt describing the current state and asking for action
-        """
         obs = self._get_observation()
         prompt = f"""You are playing Blackjack. Here is the current situation:
 
