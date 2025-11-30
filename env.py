@@ -3,6 +3,7 @@ from typing import Tuple, Dict, List, Optional
 import numpy as np
 
 
+
 class BlackjackEnv:
     """
     Blackjack environment for training LLMs using RLVR.
@@ -51,12 +52,10 @@ class BlackjackEnv:
         self.player_cards: List[int] = []
         self.dealer_cards: List[int] = []
         self.deck: List[int] = []
-
-        # Episode tracking
-        self.done = False
-        self.player_sum = 0
-        self.dealer_sum = 0
-        self.usable_ace = False
+        self.done: bool = False
+        self.usable_ace: bool = False
+        self.total_steps: int = 0
+        self.dealer_sec_card_up = False
 
     def _create_deck(self) -> List[int]:
         """Create a standard 52-card deck (values only)."""
@@ -68,23 +67,12 @@ class BlackjackEnv:
         return deck
 
     def _draw_card(self) -> int:
-        """Draw a card from the deck."""
         if not self.deck:
             self.deck = self._create_deck()
         return self.deck.pop()
 
     def _calculate_hand(self, cards: List[int]) -> Tuple[int, bool]:
-        """
-        Calculate the value of a hand.
 
-        Args:
-            cards: List of card values
-
-        Returns:
-            Tuple of (hand_sum, usable_ace)
-            - hand_sum: Total value of the hand
-            - usable_ace: Whether there's an ace counted as 11
-        """
         total = sum(cards)
         usable_ace = False
 
@@ -105,41 +93,19 @@ class BlackjackEnv:
         return len(cards) == 2 and sum(cards) + (10 if 1 in cards else 0) == 21
 
     def reset(self) -> Dict:
-        """
-        Reset the environment for a new episode.
-
-        Returns:
-            Initial state observation
-        """
         self.deck = self._create_deck()
         self.done = False
 
-        # Deal initial cards
         self.player_cards = [self._draw_card(), self._draw_card()]
         self.dealer_cards = [self._draw_card(), self._draw_card()]
 
-        # Calculate initial sums
         self.player_sum, self.usable_ace = self._calculate_hand(self.player_cards)
 
         return self._get_observation()
 
     def _get_observation(self) -> Dict:
-        """
-        Get the current state observation.
-
-        Returns:
-            Dictionary containing:
-            - player_sum: Current sum of player's hand
-            - dealer_card: Dealer's visible card
-            - usable_ace: Whether player has usable ace
-            - player_cards: Player's cards
-            - dealer_visible_card: Dealer's first card
-            - done: Whether episode is finished
-            - description: Text description of the state (for LLM)
-        """
         dealer_visible = self.dealer_cards[0]
 
-        # Create text description for LLM
         player_cards_str = ", ".join(self._card_to_string(c) for c in self.player_cards)
         dealer_card_str = self._card_to_string(dealer_visible)
 
@@ -299,7 +265,6 @@ class BlackjackEnv:
         prompt = f"""You are playing Blackjack. Here is the current situation:
 
 {obs['description']}
-
 Available actions:
 0: Stand (end your turn and let the dealer play)
 1: Hit (draw another card)
@@ -310,7 +275,7 @@ Example response:
 ```json
 {{
     "action": 0,
-    "reasoning": "Your reasoning here"
+    "reasoning": "I have 18 which is a strong hand. Hitting risks busting, so I should stand."
 }}
 ```
 """

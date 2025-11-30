@@ -18,7 +18,7 @@ def train_with_lora():
     print("="*60)
 
     config = RLVRConfig(
-        model_name="google/gemma-3-1b-it",
+        model_name="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
 
         # LoRA settings - balanced
         use_lora=True,
@@ -31,13 +31,15 @@ def train_with_lora():
         episodes_per_iteration=50,
         batch_size=8,
         learning_rate=2e-5,
+        temperature=0.3,            # Lower temperature for less random exploration
+        reward_threshold=0.0,       # Only train on winning episodes
 
         # Evaluation
         eval_frequency=1,
         eval_episodes=30,
 
-        output_dir="./checkpoints",
-        log_file="./training_log.json"
+        output_dir="./checkpoints_deepseek",
+        log_file="./training_log_deepseek.json"
     )
 
     trainer = RLVRTrainer(config)
@@ -57,5 +59,5 @@ if __name__ == "__main__":
     print("TRAINING COMPLETE!")
     print("="*60)
     print("\nTo evaluate your model:")
-    print(f"  python play_blackjack.py --model ./checkpoints_{args.config}/final_model --evaluate")
+    print(f"  python play_blackjack.py --model ./checkpoints_deepseek/final_model --evaluate")
     print()

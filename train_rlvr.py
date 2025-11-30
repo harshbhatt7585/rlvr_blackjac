@@ -110,15 +110,26 @@ class RLVRTrainer:
             seed=config.seed
         )
         print(f"Loading model: {config.model_name}")
-        self.tokenizer = AutoTokenizer.from_pretrained(config.model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            config.model_name,
+            trust_remote_code=True  # Required for some models like DeepSeek
+        )
         self.model = AutoModelForCausalLM.from_pretrained(
             config.model_name,
             torch_dtype=torch.bfloat16,
-            device_map="auto"
+            device_map="auto",
+            trust_remote_code=True  # Required for some models like DeepSeek
         )
+
+        # Configure padding token
         if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-            self.model.config.pad_token_id = self.model.config.eos_token_id
+            if self.tokenizer.unk_token is not None:
+                self.tokenizer.pad_token = self.tokenizer.unk_token
+                print(f"  Using unk_token as pad_token: {self.tokenizer.pad_token}")
+            else:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
+                print(f"  Using eos_token as pad_token: {self.tokenizer.pad_token}")
+            self.model.config.pad_token_id = self.tokenizer.pad_token_id
 
         # Apply LoRA if enabled
         if config.use_lora:
@@ -126,8 +137,23 @@ class RLVRTrainer:
 
             # Auto-detect target modules if not specified
             if config.lora_target_modules is None:
-                # Common target modules for Gemma
-                config.lora_target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
+                # Detect model architecture and set appropriate target modules
+                model_name_lower = config.model_name.lower()
+
+                if "gemma" in model_name_lower:
+                    config.lora_target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
+                    print("  Detected Gemma model - using standard attention projections")
+                elif "deepseek" in model_name_lower or "qwen" in model_name_lower:
+                    # DeepSeek and Qwen models use these module names
+                    config.lora_target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
+                    print("  Detected DeepSeek/Qwen model - using standard attention projections")
+                elif "llama" in model_name_lower:
+                    config.lora_target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
+                    print("  Detected LLaMA model - using standard attention projections")
+                else:
+                    # Default fallback
+                    config.lora_target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
+                    print("  Using default attention projections (q/k/v/o_proj)")
 
             lora_config = LoraConfig(
                 r=config.lora_r,
@@ -178,27 +204,42 @@ class RLVRTrainer:
                 {"role": "user", "content": prompt}
             ]
 
-            formatted = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            # Try to use chat template, fallback to simple format if not available
+            try:
+                formatted = self.tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True
+                )
+            except Exception as e:
+                # Fallback for models without chat template
+                print(f"Warning: Chat template failed ({e}), using simple format")
+                formatted = f"System: You are a clever Blackjack player.\n\nUser: {prompt}\n\nAssistant:"
+
             inputs = self.tokenizer(formatted, return_tensors="pt").to(self.model.device)
 
             with torch.no_grad():
                 outputs = self.model.generate(
                     **inputs,
-                    max_new_tokens=512,
+                    max_new_tokens=756,  # Reduced from 512 for faster generation
                     temperature=temperature,
-                    do_sample=True,
-                    pad_token_id=self.tokenizer.pad_token_id
+                    do_sample=temperature > 0.0,  # Only sample if temperature > 0
+                    top_p=0.9,  # Nucleus sampling for better quality
+                    pad_token_id=self.tokenizer.pad_token_id,
+                    eos_token_id=self.tokenizer.eos_token_id
                 )
             response = self.tokenizer.decode(
                 outputs[0][inputs['input_ids'].shape[1]:],
                 skip_special_tokens=True
             )
             print(f"Response: {response}")
+            
 
             response_str = response  # Keep original string
             try:
                 # Strip markdown code blocks if present
-                cleaned = response.strip()
+                cleaned = response.split('</think>')[-1].strip()
+                print(f"Cleaned: {cleaned}")
                 if cleaned.startswith('```'):
                     # Remove ```json or ``` at start and ``` at end
                     cleaned = cleaned.split('\n', 1)[1] if '\n' in cleaned else cleaned[3:]
@@ -217,11 +258,6 @@ class RLVRTrainer:
             print(f"Action: {action}")
             print(f"Reasoning: {reasoning}")
 
-
-            # If invalid action, default to standing
-            if action is None:
-                action = 0
-                response_str += f" [DEFAULTED TO STAND]"
 
             # Store trajectory
             states.append(obs['description'])
@@ -243,13 +279,13 @@ class RLVRTrainer:
             prompts=prompts,
             responses=responses,
             rewards=rewards,
-            total_reward=total_reward
+            total_reward=total_reward,
+            reasonings=reasonings
         )
 
     def collect_rollouts(self, num_episodes: int) -> List[Episode]:
 
         episodes = []
-        action_extraction_failures = 0
         total_actions = 0
 
         print(f"Collecting {num_episodes} episodes...")
@@ -257,17 +293,6 @@ class RLVRTrainer:
             episode = self.collect_episode(temperature=self.config.temperature)
             episodes.append(episode)
 
-            # Track action extraction quality
-            for response in episode.responses:
-                total_actions += 1
-                if '[DEFAULTED TO STAND]' in response:
-                    action_extraction_failures += 1
-
-        if total_actions > 0:
-            failure_rate = action_extraction_failures / total_actions
-            if failure_rate > 0.1:
-                print(f"\n⚠️  Warning: {failure_rate:.1%} of actions failed extraction (defaulted to stand)")
-                print(f"   This may indicate the model is not generating clear action numbers")
 
         return episodes
 
@@ -632,18 +657,16 @@ def main():
         batch_size=4,
         learning_rate=2e-5,
         num_epochs_per_iteration=1,
-        temperature=0.7,
-        reward_threshold=-0.5,  # Train on episodes with reward >= -0.5
+        temperature=0.3,  # Lower temperature for less random exploration
+        reward_threshold=0.0,  # Only train on winning episodes
         advantage_weighting=True,
         eval_episodes=50,
         output_dir="./checkpoints",
         log_file="./training_log.json"
     )
 
-    # Create trainer
     trainer = RLVRTrainer(config)
 
-    # Start training
     trainer.train()
 
 
