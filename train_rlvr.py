@@ -401,15 +401,6 @@ class RLVRTrainer:
 
 
     def evaluate(self, num_episodes: int = 100) -> Dict:
-        """
-        Evaluate current model performance.
-
-        Args:
-            num_episodes: Number of episodes to evaluate
-
-        Returns:
-            Dictionary of evaluation metrics
-        """
         print(f"Evaluating on {num_episodes} episodes...")
 
         episodes = []
