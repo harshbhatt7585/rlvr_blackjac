@@ -185,7 +185,7 @@ class RLVRTrainer:
         rewards = []
         reasonings = []
         done = False
-        logprobs = []
+        all_logprobs = []
 
         while not done:
             prompt = self.env.get_prompt_for_llm()
@@ -211,14 +211,27 @@ class RLVRTrainer:
 
             with torch.no_grad():
                 outputs = self.model.generate(
-                    **inputs,
-                    max_new_tokens=10,  # Reduced from 512 for faster generation
-                    temperature=temperature,
-                    do_sample=temperature > 0.0,  # Only sample if temperature > 0
-                    top_p=0.9,  # Nucleus sampling for better quality
-                    pad_token_id=self.tokenizer.pad_token_id,
-                    eos_token_id=self.tokenizer.eos_token_id
-                )
+                        **inputs,
+                        max_new_tokens=10,
+                        temperature=temperature,
+                        do_sample=temperature > 0.0,
+                        top_p=0.9,
+                        pad_token_id=self.tokenizer.pad_token_id,
+                        eos_token_id=self.tokenizer.eos_token_id,
+                        output_scores=True,  # Enable logits output
+                        return_dict_in_generate=True  # Structured output
+                    )
+                scores = outputs.scores
+                generated_ids = outputs.sequences[:, inputs['input_ids'].shape[1]:]
+                transition_scores = []
+                for i in range(len(scores)):
+                    logprobs = torch.log_softmax(scores[i], dim=-1)
+                    token_id = generated_ids[:, i].unsqueeze(-1)
+                    token_logprob = logprobs.gather(-1, token_id).squeeze(-1)
+                    transition_scores.append(token_logprob)
+
+                logprobs = torch.stack(transition_scores)
+                print(f"Logprobs: {logprobs}")
             response = self.tokenizer.decode(
                 outputs[0][inputs['input_ids'].shape[1]:],
                 skip_special_tokens=True
@@ -256,7 +269,7 @@ class RLVRTrainer:
             
             obs, reward, done, info = self.env.step(action)
             rewards.append(reward)
-            logprobs.append(outputs[0])
+            all_logprobs.append(logprobs)
 
         total_reward = sum(rewards)
 
@@ -268,7 +281,7 @@ class RLVRTrainer:
             rewards=rewards,
             total_reward=total_reward,
             reasonings=reasonings,
-            logprobs=logprobs
+            logprobs=all_logprobs
         )
 
     def collect_rollouts(self, num_episodes: int) -> List[Episode]:
@@ -279,7 +292,6 @@ class RLVRTrainer:
         print(f"Collecting {num_episodes} episodes...")
         for _ in tqdm(range(num_episodes)):
             episode = self.collect_episode(temperature=self.config.temperature)
-            print(f"Episode: {episode}")
             episodes.append(episode)
 
 
