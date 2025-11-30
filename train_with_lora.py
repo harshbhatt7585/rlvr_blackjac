@@ -9,7 +9,6 @@ This shows three preset configurations:
 
 from train_rlvr import RLVRConfig, RLVRTrainer
 
-
 def train_with_lora():
     """Standard configuration - recommended for most users."""
     print("\n" + "="*60)
@@ -28,7 +27,7 @@ def train_with_lora():
 
         # Training settings - standard
         num_iterations=10,
-        episodes_per_iteration=1,
+        episodes_per_iteration=50,
         batch_size=8,
         learning_rate=2e-5,
         temperature=0.3,            # Lower temperature for less random exploration

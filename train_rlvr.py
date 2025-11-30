@@ -11,14 +11,18 @@ RLVR approach:
 4. Iterate: Repeat to improve performance
 """
 
+import argparse
+import logging
 import os
 import json
+import time
+from pathlib import Path
+
 import torch
 import numpy as np
 from typing import List, Dict, Optional
 from dataclasses import dataclass, asdict
 from tqdm import tqdm
-import re
 import wandb
 
 from transformers import (
@@ -29,17 +33,57 @@ from transformers import (
     DataCollatorForLanguageModeling
 )
 from datasets import Dataset
-import torch.nn.functional as F
+import torch.nn as nn
 from peft import (
     LoraConfig,
     get_peft_model,
-    prepare_model_for_kbit_training,
     PeftModel
 )
 
 
 
 from env import BlackjackEnv
+
+
+class WeightedTrainer(Trainer):
+    """Trainer that applies per-example weights coming from the dataset."""
+
+    def compute_loss(self, model, inputs, return_outputs=False):
+        weights = inputs.pop('weight', None)
+
+        outputs = model(**inputs)
+        loss = outputs.loss
+
+        if weights is not None and inputs.get('labels') is not None:
+            logits = outputs.logits
+            labels = inputs['labels']
+
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+
+            loss_fct = nn.CrossEntropyLoss(reduction='none', ignore_index=-100)
+            token_loss = loss_fct(
+                shift_logits.view(-1, shift_logits.size(-1)),
+                shift_labels.view(-1)
+            )
+            token_loss = token_loss.view(shift_labels.size(0), -1)
+
+            seq_loss = token_loss.mean(dim=1)
+
+            weights = weights.to(seq_loss.device)
+            normalizer = weights.sum().clamp_min(1e-8)
+            loss = torch.sum(seq_loss * (weights / normalizer))
+
+        return (loss, outputs) if return_outputs else loss
+
+
+def configure_logging(verbose: bool = False):
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="[%(asctime)s] %(levelname)s - %(message)s",
+        datefmt="%H:%M:%S"
+    )
 
 
 @dataclass
@@ -85,6 +129,9 @@ class RLVRConfig:
     wandb_run_name: Optional[str] = None  # Run name (auto-generated if None)
     wandb_tags: Optional[List[str]] = None  # Tags for the run
 
+    # Verbosity
+    verbose: bool = False
+
 
 @dataclass
 class Episode:
@@ -104,6 +151,12 @@ class RLVRTrainer:
 
     def __init__(self, config: RLVRConfig):
         self.config = config
+        if not logging.getLogger().handlers:
+            configure_logging(config.verbose)
+        elif config.verbose:
+            logging.getLogger().setLevel(logging.DEBUG)
+
+        self.logger = logging.getLogger("RLVRTrainer")
 
         torch.manual_seed(config.seed)
         np.random.seed(config.seed)
@@ -112,7 +165,7 @@ class RLVRTrainer:
             natural_reward=config.natural_reward,
             seed=config.seed
         )
-        print(f"Loading model: {config.model_name}")
+        self.logger.info("Loading model: %s", config.model_name)
         self.tokenizer = AutoTokenizer.from_pretrained(
             config.model_name,
             trust_remote_code=True  # Required for some models like DeepSeek
@@ -132,20 +185,20 @@ class RLVRTrainer:
         if self.tokenizer.pad_token is None:
             if self.tokenizer.unk_token is not None:
                 self.tokenizer.pad_token = self.tokenizer.unk_token
-                print(f"  Using unk_token as pad_token: {self.tokenizer.pad_token}")
+                self.logger.debug("Using unk_token as pad_token: %s", self.tokenizer.pad_token)
             else:
                 self.tokenizer.pad_token = self.tokenizer.eos_token
-                print(f"  Using eos_token as pad_token: {self.tokenizer.pad_token}")
+                self.logger.debug("Using eos_token as pad_token: %s", self.tokenizer.pad_token)
             self.model.config.pad_token_id = self.tokenizer.pad_token_id
 
         # Apply LoRA if enabled
         if config.use_lora:
-            print("Applying LoRA configuration...")
+            self.logger.info("Applying LoRA configuration")
 
             # Auto-detect target modules if not specified
             if config.lora_target_modules is None:
                 config.lora_target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
-                print("  Using default attention projections (q/k/v/o_proj)")
+                self.logger.debug("Using default attention projections (q/k/v/o_proj)")
 
             lora_config = LoraConfig(
                 r=config.lora_r,
@@ -172,7 +225,7 @@ class RLVRTrainer:
                 tags=config.wandb_tags,
                 config=asdict(config)
             )
-            print(f"✓ W&B logging enabled: {wandb.run.url}")
+            self.logger.info("W&B logging enabled: %s", wandb.run.url)
 
 
     def collect_episode(self, temperature: float = 0.7) -> Episode:
@@ -187,15 +240,20 @@ class RLVRTrainer:
         done = False
         all_logprobs = []
 
-        while not done:
-            prompt = self.env.get_prompt_for_llm()
+        prompt = self.env.get_prompt_for_llm()
 
-            messages = [
+        messages = [
                 {"role": "system", "content": "You are a clever Blackjack player."},
                 {"role": "user", "content": prompt}
-            ]
+        ]
 
-            # Try to use chat template, fallback to simple format if not available
+        steps = 0
+
+        while not done:
+            if steps > 0:
+                prompt = self.env.get_prompt_for_llm()
+                messages.append({"role": "user", "content": prompt})
+
             try:
                 formatted = self.tokenizer.apply_chat_template(
                     messages,
@@ -204,7 +262,7 @@ class RLVRTrainer:
                 )
             except Exception as e:
                 # Fallback for models without chat template
-                print(f"Warning: Chat template failed ({e}), using simple format")
+                self.logger.debug("Chat template failed (%s), using simple format", e)
                 formatted = f"System: You are a clever Blackjack player.\n\nUser: {prompt}\n\nAssistant:"
 
             inputs = self.tokenizer(formatted, return_tensors="pt").to(self.model.device)
@@ -231,17 +289,16 @@ class RLVRTrainer:
                     transition_scores.append(token_logprob)
 
                 logprobs = torch.stack(transition_scores)
-                print(f"Logprobs: {logprobs}")
             response = self.tokenizer.decode(
                 outputs[0][inputs['input_ids'].shape[1]:],
                 skip_special_tokens=True
             )
-            print(f"Response: {response}")
-            
 
-            response_str = response  # Keep original string
+            messages.append({"role": "assistant", "content": response})
+
+
+            response_str = response
             try:
-                # Strip markdown code blocks if present
                 cleaned = response.split('</think>')[-1].strip()
                 if cleaned.startswith('```'):
                     # Remove ```json or ``` at start and ``` at end
@@ -251,15 +308,14 @@ class RLVRTrainer:
                 parsed = json.loads(cleaned.strip())
                 action = parsed['action']
                 reasoning = parsed['reasoning']
+
+                self.logger.log(f"Action: {action}, Reasoning: {reasoning}")
+
             except Exception as e:
-                print(f"Error parsing response: {e}")
+                self.logger.debug("Error parsing response: %s", response)
                 action = None
                 reasoning = None
 
-            
-
-            print(f"Action: {action}")
-            print(f"Reasoning: {reasoning}")
 
             states.append(obs['description'])
             actions.append(action)
@@ -289,7 +345,7 @@ class RLVRTrainer:
         episodes = []
         total_actions = 0
 
-        print(f"Collecting {num_episodes} episodes...")
+        self.logger.debug("Collecting %d episodes", num_episodes)
         for _ in tqdm(range(num_episodes)):
             episode = self.collect_episode(temperature=self.config.temperature)
             episodes.append(episode)
@@ -313,29 +369,77 @@ class RLVRTrainer:
             else:
                 weight = 1.0
 
-            for i in range(len(episode.actions)):
-                # Create target response in JSON format with reasoning
-                action = episode.actions[i]
-                state = episode.states[i]
+            for i, action in enumerate(episode.actions):
                 reasoning = episode.reasonings[i]
 
-                # Create JSON formatted target
+                # Skip malformed responses
+                if action is None or reasoning is None:
+                    continue
+
                 target = json.dumps({
                     "action": action,
                     "reasoning": reasoning
                 })
 
-                # Create full training text (prompt + response)
-                full_text = episode.prompts[i] + target
+                messages = [
+                    {"role": "system", "content": "You are a clever Blackjack player."},
+                    {"role": "user", "content": episode.prompts[i]},
+                    {"role": "assistant", "content": target}
+                ]
+
+                try:
+                    full_text = self.tokenizer.apply_chat_template(
+                        messages,
+                        tokenize=False,
+                        add_generation_prompt=False
+                    )
+                except Exception:
+                    prompt = episode.prompts[i]
+                    full_text = (
+                        "System: You are a clever Blackjack player.\n\n"
+                        f"User: {prompt}\n\n"
+                        f"Assistant: {target}"
+                    )
 
                 training_examples.append({
                     'text': full_text,
-                    'weight': weight,
-                    'reward': episode.total_reward,
+                    'weight': float(weight),
+                    'reward': float(episode.total_reward),
                     'action': action
                 })
 
+        if not training_examples:
+            return Dataset.from_dict({
+                'text': [],
+                'weight': [],
+                'reward': [],
+                'action': []
+            })
+
         return Dataset.from_list(training_examples)
+
+    def _log_iteration(self, record: Dict):
+        self.history.append(record)
+
+        log_path = self.config.log_file
+        log_dir = os.path.dirname(log_path)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+
+        with open(log_path, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(record) + "\n")
+
+    def _save_checkpoint(self, name: str) -> str:
+        save_dir = os.path.join(self.config.output_dir, name)
+        os.makedirs(save_dir, exist_ok=True)
+
+        if isinstance(self.model, PeftModel):
+            self.model.save_pretrained(save_dir)
+        else:
+            self.model.save_pretrained(save_dir)
+
+        self.tokenizer.save_pretrained(save_dir)
+        return save_dir
 
     def train_on_dataset(self, dataset: Dataset):
         """
@@ -345,10 +449,10 @@ class RLVRTrainer:
             dataset: Training dataset
         """
         if len(dataset) == 0:
-            print("Warning: Empty dataset, skipping training")
+            self.logger.warning("Empty dataset, skipping training")
             return
 
-        print(f"Training on {len(dataset)} examples...")
+        self.logger.info("Training on %d examples", len(dataset))
 
         # Tokenize dataset
         def tokenize_function(examples):
@@ -359,7 +463,14 @@ class RLVRTrainer:
                 padding=False  # Use dynamic padding via data collator
             )
 
-        tokenized_dataset = dataset.map(tokenize_function, batched=True)
+        columns_to_keep = {"weight"}
+        columns_to_remove = [col for col in dataset.column_names if col not in columns_to_keep]
+
+        tokenized_dataset = dataset.map(
+            tokenize_function,
+            batched=True,
+            remove_columns=columns_to_remove
+        )
 
         # Set up training arguments
         training_args = TrainingArguments(
@@ -380,7 +491,7 @@ class RLVRTrainer:
             tokenizer=self.tokenizer,
             mlm=False
         )
-        trainer = Trainer(
+        trainer = WeightedTrainer(
             model=self.model,
             args=training_args,
             train_dataset=tokenized_dataset,
@@ -401,7 +512,7 @@ class RLVRTrainer:
 
 
     def evaluate(self, num_episodes: int = 100) -> Dict:
-        print(f"Evaluating on {num_episodes} episodes...")
+        self.logger.info("Evaluating on %d episodes", num_episodes)
 
         episodes = []
         for _ in tqdm(range(num_episodes)):
@@ -426,37 +537,207 @@ class RLVRTrainer:
 
 
     def train(self):
-        for iteration in range(1, self.config.num_iterations + 1):
-            print(f"\n{'='*60}")
-            print(f"Iteration {iteration}/{self.config.num_iterations}")
-            print('='*60)
+        self.model.train()
 
-            # Collect rollouts
+        for iteration in range(1, self.config.num_iterations + 1):
+            self.logger.info("Iteration %d/%d", iteration, self.config.num_iterations)
             episodes = self.collect_rollouts(self.config.episodes_per_iteration)
 
+            if len(episodes) == 0:
+                self.logger.warning("No episodes collected, skipping iteration")
+                continue
 
-            avg_reward = np.mean([ep.total_reward for ep in episodes])
-            
+            total_rewards = np.array([ep.total_reward for ep in episodes], dtype=np.float32)
+            reward_stats = {
+                'reward/mean': float(np.mean(total_rewards)),
+                'reward/std': float(np.std(total_rewards)),
+                'reward/max': float(np.max(total_rewards)),
+                'reward/min': float(np.min(total_rewards)),
+                'reward/win_rate': float(np.mean(total_rewards > 0.0)),
+            }
 
-            current_episode = self.collect_episode(temperature=0.3)
-            reward = current_episode.total_reward
-            advantage = reward - avg_reward
+            dataset = self.create_training_dataset(episodes)
+            num_examples = len(dataset)
 
-            print(f"Advantage: {advantage}")
+            train_loss = None
+            if num_examples > 0:
+                train_result = self.train_on_dataset(dataset)
+                if train_result is not None:
+                    train_loss = float(train_result.training_loss)
+            else:
+                self.logger.warning("No valid training examples (possible reward threshold filter)")
 
-            old_logprobs = episodes[-1].logprobs[-1]
-            new_logprobs = current_episode.logprobs[-1]
+            eval_metrics = None
+            if self.config.eval_frequency > 0 and iteration % self.config.eval_frequency == 0:
+                self.model.eval()
+                eval_metrics = self.evaluate(self.config.eval_episodes)
+                self.model.train()
+
+            iteration_record = {
+                'iteration': iteration,
+                'episodes': len(episodes),
+                'examples': num_examples,
+                'train/loss': train_loss,
+                **reward_stats
+            }
+
+            if eval_metrics is not None:
+                iteration_record.update({f"eval/{k}": float(v) for k, v in eval_metrics.items()})
+
+            self._log_iteration(iteration_record)
+
+            checkpoint_path = self._save_checkpoint(f"iter_{iteration:03d}")
+            self.logger.info("Saved checkpoint: %s", checkpoint_path)
+
+            if self.config.use_wandb:
+                wandb_metrics = {k: v for k, v in iteration_record.items() if v is not None}
+                wandb.log(wandb_metrics, step=iteration)
+
+        final_path = self._save_checkpoint("final_model")
+        self.logger.info("Final model saved to: %s", final_path)
+
+        if self.config.use_wandb:
+            wandb.finish()
 
 
-            # ppo update
-            # ratio
-            ratio = torch.exp(new_logprobs - old_logprobs)
-            # advantage
-            advantage = reward - avg_reward
-            # ppo update
-            ppo_loss = ratio * advantage
-            # ppo update
-            ppo_loss = ppo_loss.mean()
+def _format_record(record: Dict) -> str:
+    iteration = record.get('iteration', '?')
+    parts = [f"iter {iteration}"]
 
-            print(f"PPO Loss: {ppo_loss}")
+    episodes = record.get('episodes')
+    if episodes is not None:
+        parts.append(f"episodes={episodes}")
 
+    examples = record.get('examples')
+    if examples is not None:
+        parts.append(f"examples={examples}")
+
+    train_loss = record.get('train/loss')
+    if train_loss is not None:
+        parts.append(f"train_loss={train_loss:.4f}")
+
+    reward_mean = record.get('reward/mean')
+    if reward_mean is not None:
+        parts.append(f"reward_mean={reward_mean:.3f}")
+
+    win_rate = record.get('reward/win_rate')
+    if win_rate is not None:
+        parts.append(f"win_rate={win_rate:.2f}")
+
+    eval_mean = record.get('eval/mean_reward')
+    if eval_mean is not None:
+        parts.append(f"eval_mean={eval_mean:.3f}")
+
+    return " | ".join(parts)
+
+
+def watch_training_log(log_file: str, lines: int = 20, follow: bool = False, interval: float = 2.0):
+    path = Path(log_file)
+    if not path.exists():
+        print(f"No log file found at {path}")
+        return
+
+    def iter_records():
+        with path.open('r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    yield json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+    records = list(iter_records())
+    if lines > 0:
+        records = records[-lines:]
+
+    for record in records:
+        print(_format_record(record))
+
+    if not follow:
+        return
+
+    with path.open('r', encoding='utf-8') as f:
+        f.seek(0, os.SEEK_END)
+        while True:
+            line = f.readline()
+            if not line:
+                time.sleep(interval)
+                continue
+
+            line = line.strip()
+            if not line:
+                continue
+
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            print(_format_record(record))
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="RLVR Blackjack Trainer")
+    subparsers = parser.add_subparsers(dest='command')
+
+    default_cfg = RLVRConfig()
+
+    train_parser = subparsers.add_parser('train', help='Run RLVR training (default)')
+    train_parser.add_argument('--model-name', default=default_cfg.model_name, help='Model checkpoint to fine-tune')
+    train_parser.add_argument('--iterations', type=int, default=default_cfg.num_iterations, help='Training iterations')
+    train_parser.add_argument('--episodes', type=int, default=default_cfg.episodes_per_iteration, help='Episodes per iteration')
+    train_parser.add_argument('--output-dir', default=default_cfg.output_dir, help='Directory for checkpoints')
+    train_parser.add_argument('--log-file', default=default_cfg.log_file, help='Path to JSONL training log')
+    train_parser.add_argument('--temperature', type=float, default=default_cfg.temperature, help='Sampling temperature for rollouts')
+    train_parser.add_argument('--eval-frequency', type=int, default=default_cfg.eval_frequency, help='Evaluate every N iterations (0 to disable)')
+    train_parser.add_argument('--eval-episodes', type=int, default=default_cfg.eval_episodes, help='Episodes per evaluation run')
+    train_parser.add_argument('--no-wandb', action='store_true', help='Disable Weights & Biases logging')
+    train_parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
+
+    watch_parser = subparsers.add_parser('watch', help='Watch the training log')
+    watch_parser.add_argument('--log-file', default=default_cfg.log_file, help='Path to JSONL training log')
+    watch_parser.add_argument('--lines', type=int, default=20, help='Number of recent lines to display')
+    watch_parser.add_argument('--follow', action='store_true', help='Follow the log (like tail -f)')
+    watch_parser.add_argument('--interval', type=float, default=2.0, help='Refresh interval when following the log')
+
+    parser.set_defaults(command='train')
+    return parser
+
+
+def main():
+    parser = build_parser()
+    args = parser.parse_args()
+
+    if args.command == 'watch':
+        configure_logging(False)
+        watch_training_log(
+            log_file=args.log_file,
+            lines=args.lines,
+            follow=args.follow,
+            interval=args.interval
+        )
+        return
+
+    configure_logging(args.verbose)
+
+    config = RLVRConfig(
+        model_name=args.model_name,
+        num_iterations=args.iterations,
+        episodes_per_iteration=args.episodes,
+        output_dir=args.output_dir,
+        log_file=args.log_file,
+        temperature=args.temperature,
+        eval_frequency=args.eval_frequency,
+        eval_episodes=args.eval_episodes,
+        use_wandb=not args.no_wandb,
+        verbose=args.verbose
+    )
+
+    trainer = RLVRTrainer(config)
+    trainer.train()
+
+
+if __name__ == "__main__":
+    main()
