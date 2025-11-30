@@ -114,12 +114,16 @@ class RLVRTrainer:
             config.model_name,
             trust_remote_code=True  # Required for some models like DeepSeek
         )
+        if torch.backends.mps.is_available():
+            device_map = "mps"
+        else:
+            device_map = "auto"
         self.model = AutoModelForCausalLM.from_pretrained(
             config.model_name,
             torch_dtype=torch.bfloat16,
-            device_map="auto",
+            device_map=device_map,
             trust_remote_code=True  # Required for some models like DeepSeek
-        )
+        ).to(device_map)
 
         # Configure padding token
         if self.tokenizer.pad_token is None:
