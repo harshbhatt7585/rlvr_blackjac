@@ -453,7 +453,21 @@ class RLVRTrainer:
             advantage = reward - avg_reward
 
             print(f"Advantage: {advantage}")
-            
+
+            old_logprobs = episodes[-1].logprobs
+            new_logprobs = current_episode.logprobs
+
+            # ppo update
+            # ratio
+            ratio = torch.exp(new_logprobs - old_logprobs)
+            # advantage
+            advantage = reward - avg_reward
+            # ppo update
+            ppo_loss = ratio * advantage
+            # ppo update
+            ppo_loss = ppo_loss.mean()
+
+            print(f"PPO Loss: {ppo_loss}")
 
             # Print rollout statistics
             rewards = [ep.total_reward for ep in episodes]
