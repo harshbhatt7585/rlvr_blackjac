@@ -444,8 +444,9 @@ class RLVRTrainer:
 
             print(f"Advantage: {advantage}")
 
-            old_logprobs = episodes[-1].logprobs
-            new_logprobs = current_episode.logprobs
+            old_logprobs = episodes[-1].logprobs[-1]
+            new_logprobs = current_episode.logprobs[-1]
+
 
             # ppo update
             # ratio

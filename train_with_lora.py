@@ -28,7 +28,7 @@ def train_with_lora():
 
         # Training settings - standard
         num_iterations=10,
-        episodes_per_iteration=50,
+        episodes_per_iteration=1,
         batch_size=8,
         learning_rate=2e-5,
         temperature=0.3,            # Lower temperature for less random exploration
