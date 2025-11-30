@@ -144,7 +144,6 @@ class Episode:
     rewards: List[float]  # Intermediate rewards (0 until final)
     total_reward: float  # Final episode reward
     reasonings: List[str]  # Reasoning for each action
-    logprobs: List[float]  # Log probabilities of each action
     message_histories: List[List[Dict[str, str]]]  # Conversation context per turn
 
 
@@ -239,7 +238,6 @@ class RLVRTrainer:
         responses: List[str] = []
         rewards: List[float] = []
         reasonings: List[str] = []
-        all_logprobs: List[torch.Tensor] = []
         history_snapshots: List[List[Dict[str, str]]] = []
 
         conversation: List[Dict[str, str]] = [
@@ -281,23 +279,10 @@ class RLVRTrainer:
                     top_p=0.9,
                     pad_token_id=self.tokenizer.pad_token_id,
                     eos_token_id=self.tokenizer.eos_token_id,
-                    output_scores=True,
-                    return_dict_in_generate=True
                 )
 
-            scores = outputs.scores
-            generated_ids = outputs.sequences[:, inputs['input_ids'].shape[1]:]
-            transition_scores = []
-            for i in range(len(scores)):
-                logprobs = torch.log_softmax(scores[i], dim=-1)
-                token_id = generated_ids[:, i].unsqueeze(-1)
-                token_logprob = logprobs.gather(-1, token_id).squeeze(-1)
-                transition_scores.append(token_logprob)
-
-            logprobs = torch.stack(transition_scores)
-
             response = self.tokenizer.decode(
-                outputs.sequences[0][inputs['input_ids'].shape[1]:],
+                outputs[0][inputs['input_ids'].shape[1]:],
                 skip_special_tokens=True
             )
 
@@ -330,7 +315,6 @@ class RLVRTrainer:
 
             obs, reward, done, info = self.env.step(action)
             rewards.append(reward)
-            all_logprobs.append(logprobs)
 
         total_reward = sum(rewards)
 
@@ -342,7 +326,6 @@ class RLVRTrainer:
             rewards=rewards,
             total_reward=total_reward,
             reasonings=reasonings,
-            logprobs=all_logprobs,
             message_histories=history_snapshots
         )
 
