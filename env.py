@@ -57,6 +57,8 @@ class BlackjackEnv:
         self.total_steps: int = 0
         self.dealer_sec_card_up = False
 
+        self.history: List[Dict] = []
+
     def _create_deck(self) -> List[int]:
         """Create a standard 52-card deck (values only)."""
         # 1 = Ace, 2-10 = number cards, 11-13 = J, Q, K (all worth 10)
@@ -85,12 +87,7 @@ class BlackjackEnv:
         return total, usable_ace
 
     def _is_bust(self, hand_sum: int) -> bool:
-        """Check if a hand has busted (over 21)."""
         return hand_sum > 21
-
-    def _is_natural(self, cards: List[int]) -> bool:
-        """Check if hand is a natural blackjack (21 with first two cards)."""
-        return len(cards) == 2 and sum(cards) + (10 if 1 in cards else 0) == 21
 
     def reset(self) -> Dict:
         self.deck = self._create_deck()
@@ -151,6 +148,7 @@ class BlackjackEnv:
         if self.done:
             raise ValueError("Episode is done. Call reset() to start a new episode.")
 
+
         info = {
             "player_natural": self._is_natural(self.player_cards),
             "dealer_natural": False,
@@ -159,22 +157,18 @@ class BlackjackEnv:
 
         reward = 0.0
 
-        if action == 1:  # Hit
-            # Player draws a card
+        if action == 1:  
             new_card = self._draw_card()
             self.player_cards.append(new_card)
             self.player_sum, self.usable_ace = self._calculate_hand(self.player_cards)
 
-            # Check if player busts
             if self._is_bust(self.player_sum):
                 self.done = True
                 reward = -1.0
                 info["result"] = "bust"
-                info["explanation"] = f"Player busts with {self.player_sum}"
 
         else: 
             self.dealer_sum, _ = self._calculate_hand(self.dealer_cards)
-            info["dealer_natural"] = self._is_natural(self.dealer_cards)
 
             while self.dealer_sum < 17:
                 self.dealer_cards.append(self._draw_card())
@@ -183,46 +177,19 @@ class BlackjackEnv:
             self.done = True
 
             dealer_bust = self._is_bust(self.dealer_sum)
-            player_natural = info["player_natural"]
-            dealer_natural = info["dealer_natural"]
 
             if dealer_bust:
                 reward = 1.0
-                info["result"] = "dealer_bust"
-                info["explanation"] = f"Dealer busts with {self.dealer_sum}"
-            elif player_natural and not dealer_natural:
-                reward = self.natural_reward
-                info["result"] = "natural_win"
-                info["explanation"] = "Natural blackjack!"
             elif self.player_sum > self.dealer_sum:
                 reward = 1.0
-                info["result"] = "win"
-                info["explanation"] = f"Player wins ({self.player_sum} vs {self.dealer_sum})"
-            elif self.player_sum == self.dealer_sum:
-                reward = 0.0
-                info["result"] = "draw"
-                info["explanation"] = f"Draw ({self.player_sum})"
             else:
                 reward = -1.0
-                info["result"] = "lose"
-                info["explanation"] = f"Dealer wins ({self.dealer_sum} vs {self.player_sum})"
+        
 
-            dealer_cards_str = ", ".join(self._card_to_string(c) for c in self.dealer_cards)
-            info["dealer_hand"] = f"[{dealer_cards_str}] (Total: {self.dealer_sum})"
-
-        observation = self._get_observation()
-        return observation, reward, self.done, info
+        new_state = self._get_observation()
+        return new_state, reward, self.done, info
 
     def render(self, mode: str = "human") -> Optional[str]:
-        """
-        Render the current state.
-
-        Args:
-            mode: Render mode ('human' for print, 'ansi' for string)
-
-        Returns:
-            String representation if mode is 'ansi', None otherwise
-        """
         player_cards_str = ", ".join(self._card_to_string(c) for c in self.player_cards)
         dealer_cards_str = ", ".join(self._card_to_string(c) for c in self.dealer_cards)
 
