@@ -16,6 +16,7 @@ import logging
 import os
 import json
 import time
+import copy
 from pathlib import Path
 
 import torch
@@ -144,6 +145,7 @@ class Episode:
     total_reward: float  # Final episode reward
     reasonings: List[str]  # Reasoning for each action
     logprobs: List[float]  # Log probabilities of each action
+    message_histories: List[List[Dict[str, str]]]  # Conversation context per turn
 
 
 class RLVRTrainer:
@@ -231,98 +233,101 @@ class RLVRTrainer:
     def collect_episode(self, temperature: float = 0.7) -> Episode:
         obs = self.env.reset()
 
-        states = []
-        actions = []
-        prompts = []
-        responses = []
-        rewards = []
-        reasonings = []
-        done = False
-        all_logprobs = []
+        states: List[str] = []
+        actions: List[int] = []
+        prompts: List[str] = []
+        responses: List[str] = []
+        rewards: List[float] = []
+        reasonings: List[str] = []
+        all_logprobs: List[torch.Tensor] = []
+        history_snapshots: List[List[Dict[str, str]]] = []
 
-        prompt = self.env.get_prompt_for_llm()
-
-        messages = [
-                {"role": "system", "content": "You are a clever Blackjack player."},
-                {"role": "user", "content": prompt}
+        conversation: List[Dict[str, str]] = [
+            {"role": "system", "content": "You are a clever Blackjack player."}
         ]
 
-        steps = 0
+        done = False
 
         while not done:
-            if steps > 0:
-                prompt = self.env.get_prompt_for_llm()
-                messages.append({"role": "user", "content": prompt})
+            prompt = self.env.get_prompt_for_llm()
+            conversation.append({"role": "user", "content": prompt})
+
+            history_snapshot = copy.deepcopy(conversation)
+            history_snapshots.append(history_snapshot)
 
             try:
                 formatted = self.tokenizer.apply_chat_template(
-                    messages,
+                    history_snapshot,
                     tokenize=False,
                     add_generation_prompt=True
                 )
             except Exception as e:
-                # Fallback for models without chat template
                 self.logger.debug("Chat template failed (%s), using simple format", e)
-                formatted = f"System: You are a clever Blackjack player.\n\nUser: {prompt}\n\nAssistant:"
+                parts = []
+                for message in history_snapshot:
+                    role = message['role'].capitalize()
+                    parts.append(f"{role}: {message['content']}")
+                parts.append("Assistant:")
+                formatted = "\n\n".join(parts)
 
             inputs = self.tokenizer(formatted, return_tensors="pt").to(self.model.device)
 
             with torch.no_grad():
                 outputs = self.model.generate(
-                        **inputs,
-                        max_new_tokens=10,
-                        temperature=temperature,
-                        do_sample=temperature > 0.0,
-                        top_p=0.9,
-                        pad_token_id=self.tokenizer.pad_token_id,
-                        eos_token_id=self.tokenizer.eos_token_id,
-                        output_scores=True,  # Enable logits output
-                        return_dict_in_generate=True  # Structured output
-                    )
-                scores = outputs.scores
-                generated_ids = outputs.sequences[:, inputs['input_ids'].shape[1]:]
-                transition_scores = []
-                for i in range(len(scores)):
-                    logprobs = torch.log_softmax(scores[i], dim=-1)
-                    token_id = generated_ids[:, i].unsqueeze(-1)
-                    token_logprob = logprobs.gather(-1, token_id).squeeze(-1)
-                    transition_scores.append(token_logprob)
+                    **inputs,
+                    max_new_tokens=756,
+                    temperature=temperature,
+                    do_sample=temperature > 0.0,
+                    top_p=0.9,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                    eos_token_id=self.tokenizer.eos_token_id,
+                    output_scores=True,
+                    return_dict_in_generate=True
+                )
 
-                logprobs = torch.stack(transition_scores)
+            scores = outputs.scores
+            generated_ids = outputs.sequences[:, inputs['input_ids'].shape[1]:]
+            transition_scores = []
+            for i in range(len(scores)):
+                logprobs = torch.log_softmax(scores[i], dim=-1)
+                token_id = generated_ids[:, i].unsqueeze(-1)
+                token_logprob = logprobs.gather(-1, token_id).squeeze(-1)
+                transition_scores.append(token_logprob)
+
+            logprobs = torch.stack(transition_scores)
+
             response = self.tokenizer.decode(
-                outputs[0][inputs['input_ids'].shape[1]:],
+                outputs.sequences[0][inputs['input_ids'].shape[1]:],
                 skip_special_tokens=True
             )
 
-            messages.append({"role": "assistant", "content": response})
-
+            conversation.append({"role": "assistant", "content": response})
 
             response_str = response
             try:
                 cleaned = response.split('</think>')[-1].strip()
                 if cleaned.startswith('```'):
-                    # Remove ```json or ``` at start and ``` at end
                     cleaned = cleaned.split('\n', 1)[1] if '\n' in cleaned else cleaned[3:]
                     cleaned = cleaned.rsplit('```', 1)[0] if '```' in cleaned else cleaned
 
                 parsed = json.loads(cleaned.strip())
-                action = parsed['action']
-                reasoning = parsed['reasoning']
-
-                self.logger.log(f"Action: {action}, Reasoning: {reasoning}")
-
-            except Exception as e:
+                action = parsed.get('action')
+                reasoning = parsed.get('reasoning')
+            except Exception:
                 self.logger.debug("Error parsing response: %s", response)
                 action = None
                 reasoning = None
 
+            if action not in (0, 1):
+                self.logger.warning("Invalid action '%s', defaulting to stand (0)", action)
+                action = 0
 
             states.append(obs['description'])
             actions.append(action)
             reasonings.append(reasoning)
             prompts.append(prompt)
             responses.append(response_str)
-            
+
             obs, reward, done, info = self.env.step(action)
             rewards.append(reward)
             all_logprobs.append(logprobs)
@@ -337,7 +342,8 @@ class RLVRTrainer:
             rewards=rewards,
             total_reward=total_reward,
             reasonings=reasonings,
-            logprobs=all_logprobs
+            logprobs=all_logprobs,
+            message_histories=history_snapshots
         )
 
     def collect_rollouts(self, num_episodes: int) -> List[Episode]:
@@ -356,50 +362,37 @@ class RLVRTrainer:
     def create_training_dataset(self, episodes: List[Episode]) -> Dataset:
         training_examples = []
 
+        avg_reward = np.mean([ep.total_reward for ep in episodes]) if self.config.advantage_weighting else 0.0
+
         for episode in episodes:
-            # Skip low-reward episodes if threshold is set
+            # Skip low-reward episodes
             if episode.total_reward < self.config.reward_threshold:
                 continue
 
-            # Calculate advantage (how much better than average)
+            # Simple weight calculation: higher reward = higher weight
             if self.config.advantage_weighting:
-                avg_reward = np.mean([ep.total_reward for ep in episodes])
-                advantage = episode.total_reward - avg_reward
-                weight = max(0.1, advantage + 1.0)  # Ensure positive weight
+                weight = max(0.1, episode.total_reward - avg_reward + 1.0)
             else:
                 weight = 1.0
 
             for i, action in enumerate(episode.actions):
-                reasoning = episode.reasonings[i]
-
                 # Skip malformed responses
-                if action is None or reasoning is None:
+                if action is None or episode.reasonings[i] is None:
                     continue
 
-                target = json.dumps({
-                    "action": action,
-                    "reasoning": reasoning
-                })
+                # Create target response
+                target = json.dumps({"action": action, "reasoning": episode.reasonings[i]})
 
-                messages = [
-                    {"role": "system", "content": "You are a clever Blackjack player."},
-                    {"role": "user", "content": episode.prompts[i]},
-                    {"role": "assistant", "content": target}
-                ]
+                # Build conversation messages
+                messages = episode.message_histories[i] + [{"role": "assistant", "content": target}]
 
+                # Format as text
                 try:
                     full_text = self.tokenizer.apply_chat_template(
-                        messages,
-                        tokenize=False,
-                        add_generation_prompt=False
+                        messages, tokenize=False, add_generation_prompt=False
                     )
                 except Exception:
-                    prompt = episode.prompts[i]
-                    full_text = (
-                        "System: You are a clever Blackjack player.\n\n"
-                        f"User: {prompt}\n\n"
-                        f"Assistant: {target}"
-                    )
+                    full_text = "\n\n".join([f"{m['role'].capitalize()}: {m['content']}" for m in messages])
 
                 training_examples.append({
                     'text': full_text,
@@ -408,13 +401,9 @@ class RLVRTrainer:
                     'action': action
                 })
 
+        # Return empty or filled dataset
         if not training_examples:
-            return Dataset.from_dict({
-                'text': [],
-                'weight': [],
-                'reward': [],
-                'action': []
-            })
+            return Dataset.from_dict({'text': [], 'weight': [], 'reward': [], 'action': []})
 
         return Dataset.from_list(training_examples)
 
@@ -557,6 +546,8 @@ class RLVRTrainer:
             }
 
             dataset = self.create_training_dataset(episodes)
+
+            print("Dataset", dataset)
             num_examples = len(dataset)
 
             train_loss = None
