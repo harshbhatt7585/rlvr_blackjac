@@ -426,7 +426,6 @@ class RLVRTrainer:
 
 
     def train(self):
-        """Train using RLVR (supervised fine-tuning on good trajectories)."""
         for iteration in range(1, self.config.num_iterations + 1):
             print(f"\n{'='*60}")
             print(f"Iteration {iteration}/{self.config.num_iterations}")
@@ -460,30 +459,3 @@ class RLVRTrainer:
 
             print(f"PPO Loss: {ppo_loss}")
 
-
-def main():
-    """Main training function."""
-
-    # Create configuration
-    config = RLVRConfig(
-        model_name="google/gemma-2b-it",  # Use smaller model for faster training
-        num_iterations=10,
-        episodes_per_iteration=50,  # Start with fewer episodes
-        batch_size=4,
-        learning_rate=2e-5,
-        num_epochs_per_iteration=1,
-        temperature=0.3,  # Lower temperature for less random exploration
-        reward_threshold=0.0,  # Only train on winning episodes
-        advantage_weighting=True,
-        eval_episodes=50,
-        output_dir="./checkpoints",
-        log_file="./training_log.json"
-    )
-
-    trainer = RLVRTrainer(config)
-
-    trainer.train()
-
-
-if __name__ == "__main__":
-    main()
