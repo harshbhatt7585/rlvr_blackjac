@@ -256,7 +256,7 @@ class RLVRTrainer:
             
             obs, reward, done, info = self.env.step(action)
             rewards.append(reward)
-            logprobs.append(outputs.logprobs)
+            logprobs.append(outputs[0])
 
         total_reward = sum(rewards)
 
