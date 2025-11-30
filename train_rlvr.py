@@ -448,7 +448,9 @@ class RLVRTrainer:
             all_actions = []
             for ep in episodes:
                 all_actions.extend(ep.actions)
-            hit_rate = sum(all_actions) / len(all_actions) if all_actions else 0
+            # Filter out None values (from failed parses)
+            valid_actions = [a for a in all_actions if a is not None]
+            hit_rate = sum(valid_actions) / len(valid_actions) if valid_actions else 0
             stand_rate = 1 - hit_rate
 
             rollout_stats = {
