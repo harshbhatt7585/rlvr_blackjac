@@ -10,8 +10,9 @@ This script allows you to:
 import os
 import torch
 import re
-from typing import Optional
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from threading import Thread
+from typing import Optional, Callable
+from transformers import AutoTokenizer, AutoModelForCausalLM, TextIteratorStreamer
 from peft import PeftModel, PeftConfig
 
 from env import BlackjackEnv
@@ -89,13 +90,21 @@ class BlackjackPlayer:
 
         return None
 
-    def choose_action(self, prompt: str, temperature: float = 0.3) -> tuple[int, str]:
+    def choose_action(
+        self,
+        prompt: str,
+        temperature: float = 0.3,
+        stream: bool = False,
+        stream_handler: Optional[Callable[[str], None]] = None
+    ) -> tuple[int, str]:
         """
         Choose an action given a game state prompt.
 
         Args:
             prompt: State description and action request
             temperature: Sampling temperature
+            stream: Whether to stream tokens as they are generated
+            stream_handler: Optional callable that receives streamed text chunks
 
         Returns:
             Tuple of (action, raw_response)
@@ -103,19 +112,55 @@ class BlackjackPlayer:
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
 
         with torch.no_grad():
-            outputs = self.model.generate(
-                **inputs,
-                max_new_tokens=100,
-                temperature=temperature,
-                do_sample=True,
-                pad_token_id=self.tokenizer.pad_token_id
-            )
+            if stream:
+                streamer = TextIteratorStreamer(
+                    self.tokenizer,
+                    skip_prompt=True,
+                    skip_special_tokens=True
+                )
 
-        # Decode response
-        response = self.tokenizer.decode(
-            outputs[0][inputs['input_ids'].shape[1]:],
-            skip_special_tokens=True
-        )
+                generation_kwargs = {
+                    **{k: v for k, v in inputs.items()},
+                    "max_new_tokens": 100,
+                    "temperature": temperature,
+                    "do_sample": True,
+                    "pad_token_id": self.tokenizer.pad_token_id,
+                    "streamer": streamer
+                }
+
+                # Launch generation in a separate thread so we can consume the stream
+                thread = Thread(target=self.model.generate, kwargs=generation_kwargs)
+                thread.start()
+
+                response_chunks = []
+                for new_text in streamer:
+                    if stream_handler is not None:
+                        stream_handler(new_text)
+                    else:
+                        print(new_text, end="", flush=True)
+                    response_chunks.append(new_text)
+
+                thread.join()
+
+                if stream_handler is None:
+                    print()
+
+                response = "".join(response_chunks)
+
+            else:
+                outputs = self.model.generate(
+                    **inputs,
+                    max_new_tokens=100,
+                    temperature=temperature,
+                    do_sample=True,
+                    pad_token_id=self.tokenizer.pad_token_id
+                )
+
+                # Decode response
+                response = self.tokenizer.decode(
+                    outputs[0][inputs['input_ids'].shape[1]:],
+                    skip_special_tokens=True
+                )
 
         # Extract action
         action = self.extract_action(response)
@@ -184,13 +229,19 @@ def play_episode(player: BlackjackPlayer, env: BlackjackEnv,
         if verbose:
             print(f"\n{obs['description']}")
 
+        stream_output = verbose
+
+        if stream_output:
+            print("\nModel response: ", end="", flush=True)
+
         # Get model's action
-        action, response = player.choose_action(prompt)
+        action, response = player.choose_action(prompt, stream=stream_output)
 
         action_name = "STAND" if action == 0 else "HIT"
 
         if verbose:
-            print(f"\nModel response: {response}")
+            if not stream_output:
+                print(f"\nModel response: {response}")
             print(f"Action: {action_name}")
 
         # Compare with baseline

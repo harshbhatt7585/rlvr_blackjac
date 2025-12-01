@@ -18,6 +18,7 @@ import json
 import time
 import copy
 from pathlib import Path
+from threading import Thread
 
 import torch
 import numpy as np
@@ -31,7 +32,8 @@ from transformers import (
     AutoModelForCausalLM,
     TrainingArguments,
     Trainer,
-    DataCollatorForLanguageModeling
+    DataCollatorForLanguageModeling,
+    TextIteratorStreamer
 )
 from datasets import Dataset
 import torch.nn as nn
@@ -49,7 +51,7 @@ from env import BlackjackEnv
 class WeightedTrainer(Trainer):
     """Trainer that applies per-example weights coming from the dataset."""
 
-    def compute_loss(self, model, inputs, return_outputs=False):
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         weights = inputs.pop('weight', None)
 
         outputs = model(**inputs)
@@ -132,6 +134,7 @@ class RLVRConfig:
 
     # Verbosity
     verbose: bool = False
+    stream_rollouts: bool = True  # Stream model tokens during rollouts by default
 
 
 @dataclass
@@ -229,7 +232,64 @@ class RLVRTrainer:
             self.logger.info("W&B logging enabled: %s", wandb.run.url)
 
 
-    def collect_episode(self, temperature: float = 0.7) -> Episode:
+    def _generate_response(
+        self,
+        inputs,
+        temperature: float,
+        stream: bool,
+        stream_prefix: Optional[str] = None
+    ) -> str:
+        generation_kwargs = {
+            **{k: v for k, v in inputs.items()},
+            "max_new_tokens": 756,
+            "temperature": temperature,
+            "do_sample": temperature > 0.0,
+            "top_p": 0.9,
+            "pad_token_id": self.tokenizer.pad_token_id,
+            "eos_token_id": self.tokenizer.eos_token_id,
+        }
+
+        with torch.no_grad():
+            if stream:
+                if stream_prefix is not None:
+                    print(stream_prefix, end="", flush=True)
+                streamer = TextIteratorStreamer(
+                    self.tokenizer,
+                    skip_prompt=True,
+                    skip_special_tokens=True
+                )
+                generation_kwargs["streamer"] = streamer
+
+                thread = Thread(target=self.model.generate, kwargs=generation_kwargs)
+                thread.start()
+
+                chunks = []
+                for text in streamer:
+                    print(text, end="", flush=True)
+                    chunks.append(text)
+
+                thread.join()
+                print()
+
+                return "".join(chunks)
+
+            outputs = self.model.generate(**generation_kwargs)
+
+        return self.tokenizer.decode(
+            outputs[0][inputs['input_ids'].shape[1]:],
+            skip_special_tokens=True
+        )
+
+
+    def collect_episode(
+        self,
+        temperature: float = 0.7,
+        verbose: bool = False,
+        stream: Optional[bool] = None,
+        context: Optional[str] = None,
+        episode_index: Optional[int] = None,
+        episode_total: Optional[int] = None
+    ) -> Episode:
         obs = self.env.reset()
 
         states: List[str] = []
@@ -245,10 +305,30 @@ class RLVRTrainer:
         ]
 
         done = False
+        step = 0
+
+        stream_enabled = stream if stream is not None else (self.config.stream_rollouts or verbose)
+
+        if verbose or stream_enabled:
+            header_parts = []
+            if context:
+                header_parts.append(context)
+            if episode_index is not None:
+                total_text = f"{episode_index + 1}" if episode_total is None else f"{episode_index + 1}/{episode_total}"
+                header_parts.append(f"Episode {total_text}")
+            else:
+                header_parts.append("Episode")
+            header = " - ".join(header_parts)
+            print(f"\n{'='*60}\n{header}\n{'='*60}")
 
         while not done:
+            step += 1
             prompt = self.env.get_prompt_for_llm()
             conversation.append({"role": "user", "content": prompt})
+
+            if verbose or stream_enabled:
+                print(f"\n[Step {step}]")
+                print(f"State: {prompt}")
 
             history_snapshot = copy.deepcopy(conversation)
             history_snapshots.append(history_snapshot)
@@ -270,22 +350,15 @@ class RLVRTrainer:
 
             inputs = self.tokenizer(formatted, return_tensors="pt").to(self.model.device)
 
-            with torch.no_grad():
-                outputs = self.model.generate(
-                    **inputs,
-                    max_new_tokens=756,
-                    temperature=temperature,
-                    do_sample=temperature > 0.0,
-                    top_p=0.9,
-                    pad_token_id=self.tokenizer.pad_token_id,
-                    eos_token_id=self.tokenizer.eos_token_id,
-                )
-
-            response = self.tokenizer.decode(
-                outputs[0][inputs['input_ids'].shape[1]:],
-                skip_special_tokens=True
+            response = self._generate_response(
+                inputs,
+                temperature,
+                stream=stream_enabled,
+                stream_prefix="Model response: " if stream_enabled else None
             )
-            
+
+            if verbose and not stream_enabled:
+                print(f"Model response: {response}")
 
             conversation.append({"role": "assistant", "content": response})
 
@@ -297,12 +370,13 @@ class RLVRTrainer:
                     cleaned = cleaned.rsplit('```', 1)[0] if '```' in cleaned else cleaned
 
                 parsed = json.loads(cleaned.strip())
+
                 action = parsed.get('action')
                 reasoning = parsed.get('reasoning')
 
-                self.logger.log(f"Action: {action}, Reasoning: {reasoning}")
+                self.logger.info("Action: %s, Reasoning: %s", action, reasoning)
             except Exception:
-                self.logger.debug("Error parsing response: %s", response)
+                self.logger.debug("Error parsing response: %s", response, exc_info=True)
                 action = None
                 reasoning = None
 
@@ -321,6 +395,10 @@ class RLVRTrainer:
 
         total_reward = sum(rewards)
 
+        if verbose or stream_enabled:
+            print(f"\nEpisode complete | Total reward: {total_reward:.2f}")
+            print("-" * 60)
+
         return Episode(
             states=states,
             actions=actions,
@@ -332,14 +410,24 @@ class RLVRTrainer:
             message_histories=history_snapshots
         )
 
-    def collect_rollouts(self, num_episodes: int) -> List[Episode]:
+    def collect_rollouts(self, num_episodes: int, iteration: int) -> List[Episode]:
 
         episodes = []
-        total_actions = 0
 
         self.logger.debug("Collecting %d episodes", num_episodes)
-        for _ in tqdm(range(num_episodes)):
-            episode = self.collect_episode(temperature=self.config.temperature)
+        iterator = tqdm(
+            range(num_episodes),
+            disable=self.config.verbose or self.config.stream_rollouts,
+        )
+        for idx in iterator:
+            episode = self.collect_episode(
+                temperature=self.config.temperature,
+                verbose=self.config.verbose,
+                stream=self.config.stream_rollouts,
+                context=f"Iteration {iteration}/{self.config.num_iterations}",
+                episode_index=idx,
+                episode_total=num_episodes
+            )
             episodes.append(episode)
 
 
@@ -486,13 +574,28 @@ class RLVRTrainer:
         return train_result
 
 
-    def evaluate(self, num_episodes: int = 100) -> Dict:
+    def evaluate(self, num_episodes: int = 100, iteration: Optional[int] = None) -> Dict:
+        iteration_text = f"Iteration {iteration}/{self.config.num_iterations}" if iteration is not None else "Evaluation"
+        print(f"\n{'.'*60}\n{iteration_text} | Evaluation\n{'.'*60}")
+        print(f"Evaluating {num_episodes} episodes...")
+
         self.logger.info("Evaluating on %d episodes", num_episodes)
 
         episodes = []
-        for _ in tqdm(range(num_episodes)):
+        iterator = tqdm(
+            range(num_episodes),
+            disable=self.config.verbose or self.config.stream_rollouts
+        )
+        for idx in iterator:
             # Use lower temperature for evaluation (more deterministic)
-            episode = self.collect_episode(temperature=0.3)
+            episode = self.collect_episode(
+                temperature=0.3,
+                verbose=self.config.verbose,
+                stream=self.config.stream_rollouts,
+                context=f"{iteration_text} | Eval",
+                episode_index=idx,
+                episode_total=num_episodes
+            )
             episodes.append(episode)
 
         # Calculate metrics
@@ -508,6 +611,15 @@ class RLVRTrainer:
             'draw_rate': np.mean([r == 0 for r in total_rewards]),
         }
 
+        print(
+            "Evaluation summary → "
+            f"mean: {metrics['mean_reward']:.3f}, "
+            f"std: {metrics['std_reward']:.3f}, "
+            f"min/max: {metrics['min_reward']:.3f}/{metrics['max_reward']:.3f}, "
+            f"win-rate: {metrics['win_rate']:.1%}, "
+            f"draw-rate: {metrics['draw_rate']:.1%}"
+        )
+
         return metrics
 
 
@@ -515,8 +627,12 @@ class RLVRTrainer:
         self.model.train()
 
         for iteration in range(1, self.config.num_iterations + 1):
+            iteration_header = f"Iteration {iteration}/{self.config.num_iterations}"
+            print(f"\n{'#'*60}\n{iteration_header}\n{'#'*60}")
+            print(f"Collecting {self.config.episodes_per_iteration} episodes...")
+
             self.logger.info("Iteration %d/%d", iteration, self.config.num_iterations)
-            episodes = self.collect_rollouts(self.config.episodes_per_iteration)
+            episodes = self.collect_rollouts(self.config.episodes_per_iteration, iteration)
 
             if len(episodes) == 0:
                 self.logger.warning("No episodes collected, skipping iteration")
@@ -530,11 +646,17 @@ class RLVRTrainer:
                 'reward/min': float(np.min(total_rewards)),
                 'reward/win_rate': float(np.mean(total_rewards > 0.0)),
             }
+            print(
+                "Rewards summary → "
+                f"mean: {reward_stats['reward/mean']:.3f}, "
+                f"std: {reward_stats['reward/std']:.3f}, "
+                f"min/max: {reward_stats['reward/min']:.3f}/{reward_stats['reward/max']:.3f}, "
+                f"win-rate: {reward_stats['reward/win_rate']:.1%}"
+            )
 
             dataset = self.create_training_dataset(episodes)
-
-            print("Dataset", dataset)
             num_examples = len(dataset)
+            print(f"Training on {num_examples} examples from collected episodes")
 
             train_loss = None
             if num_examples > 0:
@@ -547,7 +669,7 @@ class RLVRTrainer:
             eval_metrics = None
             if self.config.eval_frequency > 0 and iteration % self.config.eval_frequency == 0:
                 self.model.eval()
-                eval_metrics = self.evaluate(self.config.eval_episodes)
+                eval_metrics = self.evaluate(self.config.eval_episodes, iteration=iteration)
                 self.model.train()
 
             iteration_record = {
@@ -565,6 +687,7 @@ class RLVRTrainer:
 
             checkpoint_path = self._save_checkpoint(f"iter_{iteration:03d}")
             self.logger.info("Saved checkpoint: %s", checkpoint_path)
+            print(f"Checkpoint saved → {checkpoint_path}")
 
             if self.config.use_wandb:
                 wandb_metrics = {k: v for k, v in iteration_record.items() if v is not None}
@@ -572,6 +695,7 @@ class RLVRTrainer:
 
         final_path = self._save_checkpoint("final_model")
         self.logger.info("Final model saved to: %s", final_path)
+        print(f"Final model saved → {final_path}")
 
         if self.config.use_wandb:
             wandb.finish()
@@ -671,6 +795,7 @@ def build_parser() -> argparse.ArgumentParser:
     train_parser.add_argument('--eval-frequency', type=int, default=default_cfg.eval_frequency, help='Evaluate every N iterations (0 to disable)')
     train_parser.add_argument('--eval-episodes', type=int, default=default_cfg.eval_episodes, help='Episodes per evaluation run')
     train_parser.add_argument('--no-wandb', action='store_true', help='Disable Weights & Biases logging')
+    train_parser.add_argument('--no-stream', action='store_true', help='Disable token streaming during rollouts')
     train_parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
 
     watch_parser = subparsers.add_parser('watch', help='Watch the training log')
@@ -709,7 +834,8 @@ def main():
         eval_frequency=args.eval_frequency,
         eval_episodes=args.eval_episodes,
         use_wandb=not args.no_wandb,
-        verbose=args.verbose
+        verbose=args.verbose,
+        stream_rollouts=not args.no_stream
     )
 
     trainer = RLVRTrainer(config)
