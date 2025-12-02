@@ -118,6 +118,33 @@ class Episode:
     logits: torch.Tensor  # Logits of the episode
 
 
+import random
+@dataclass
+class ReplayBuffer:
+    episodes: List[Episode]
+
+
+class ReplayBuffer:
+    def __init__(self, capacity: int):
+        self.capacity = capacity
+        self.buffer = []
+    
+    def add(self, episode: Episode):
+        if len(self.buffer) >= self.capacity:
+            self.buffer.pop(0)
+        self.buffer.append(episode)
+    
+    def sample(self, batch_size: int) -> List[Episode]:
+        return random.sample(self.buffer, batch_size)
+    
+    def __len__(self) -> int:
+        return len(self.buffer)
+    
+    def clear(self):
+        self.buffer = []
+
+
+
 class RLVRTrainer:
     """RLVR trainer for Blackjack."""
 
@@ -711,6 +738,8 @@ class RLVRTrainer:
 
             episodes = self.collect_rollouts(self.config.episodes_per_iteration, iteration=iteration)
 
+            print("logits shape: ", episodes[0].logits.shape)
+
             # Calculate baseline (mean reward)
             mean_reward = sum([ep.total_reward for ep in episodes]) / len(episodes)
             std_reward = np.std([ep.total_reward for ep in episodes])
@@ -744,9 +773,6 @@ class RLVRTrainer:
 
 
 
-            # Sample batch from valid episodes
-            batch_episodes = episodes
-
             # Train on the batch
             total_loss = 0.0
             step_losses = []
@@ -754,19 +780,19 @@ class RLVRTrainer:
             num_training_steps = 0
 
             # sample batch
-            batch_episodes = random.sample(valid_episodes, self.config.batch_size)
+            batch_episodes = random.sample(episodes, self.config.batch_size)
 
             # compute advantage
             advantage = mean_reward 
    
             # compute ppo loss
-            old_logprobs = [ep.logits for ep in batch_episodes]
-            print(old_logprobs)
+            old_logprobs = torch.stack([ep.logits for ep in batch_episodes])
+            print(old_logprobs.shape)
 
             # new logprobs
             new_episodes = self.collect_episodes_batched(self.config.batch_size, self.config.temperature)
-            new_logprobs = [ep.logits.mean(axis=0) for ep in new_episodes]
-            print(new_logprobs)
+            new_logprobs = torch.stack([ep.logits for ep in new_episodes])
+            print(new_logprobs.shape)
 
             # compute ratio
             ratio = new_logprobs / old_logprobs
