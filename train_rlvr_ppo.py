@@ -30,13 +30,8 @@ import wandb
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
-    TrainingArguments,
-    Trainer,
-    DataCollatorForLanguageModeling,
     TextIteratorStreamer
 )
-from datasets import Dataset
-import torch.nn as nn
 import torch.nn.functional as F
 from peft import (
     LoraConfig,
@@ -61,8 +56,7 @@ def configure_logging(verbose: bool = False):
 class RLVRConfig:
     """Configuration for RLVR training."""
 
-    # Model settings
-    model_name: str = "meta-llama/Llama-3.2-1B-Instruct"  # or "google/gemma-7b-it"
+    model_name: str = "meta-llama/Llama-3.2-1B-Instruct"  
 
     # Training settings
     num_iterations: int = 10
@@ -104,6 +98,10 @@ class RLVRConfig:
     # Verbosity
     verbose: bool = False
     stream_rollouts: bool = True  # Stream model tokens during rollouts by default
+
+    # Batched generation settings
+    use_batched_generation: bool = True  # Use batched generation for faster rollouts
+    generation_batch_size: int = 8  # Number of episodes to generate in parallel
 
 
 @dataclass
@@ -246,7 +244,6 @@ class RLVRTrainer:
                 thread.join()
                 print()
 
-                # Return tuple with None logprobs for streaming (can't get logprobs with streaming)
                 return "".join(chunks), None
 
             outputs = self.model.generate(**generation_kwargs)
@@ -263,6 +260,67 @@ class RLVRTrainer:
             outputs.sequences[0][inputs['input_ids'].shape[1]:],
             skip_special_tokens=True
         ), logprobs)
+
+    def _generate_responses_batched(
+        self,
+        formatted_prompts: List[str],
+        temperature: float
+    ) -> List[tuple]:
+        """Generate responses for multiple prompts in a single batch."""
+
+        original_padding_side = self.tokenizer.padding_side
+        self.tokenizer.padding_side = "left"
+
+        inputs = self.tokenizer(
+            formatted_prompts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=2048
+        ).to(self.model.device)
+
+        generation_kwargs = {
+            **{k: v for k, v in inputs.items()},
+            "max_new_tokens": 756,
+            "temperature": temperature,
+            "do_sample": temperature > 0.0,
+            "top_p": 0.9,
+            "pad_token_id": self.tokenizer.pad_token_id,
+            "eos_token_id": self.tokenizer.eos_token_id,
+            "output_scores": True,
+            "return_dict_in_generate": True,
+        }
+
+        with torch.no_grad():
+            outputs = self.model.generate(**generation_kwargs)
+
+        # Process each response in the batch
+        results = []
+        batch_size = len(formatted_prompts)
+
+        for i in range(batch_size):
+            # Get the generated tokens for this sample
+            input_length = inputs['input_ids'][i].ne(self.tokenizer.pad_token_id).sum().item()
+            generated_tokens = outputs.sequences[i][input_length:]
+
+            # Decode the response
+            response = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+
+            logprobs_list = []
+            for logit in outputs.scores:
+                logprob = F.log_softmax(logit[i:i+1], dim=-1)
+                logprobs_list.append(logprob)
+
+            if logprobs_list:
+                logprobs = torch.stack(logprobs_list)
+            else:
+                logprobs = None
+
+            results.append((response, logprobs))
+
+        self.tokenizer.padding_side = original_padding_side
+
+        return results
 
 
     def collect_episode(
@@ -398,11 +456,163 @@ class RLVRTrainer:
             logits=all_logprobs
         )
 
-    def collect_rollouts(self, num_episodes: int, iteration: int) -> List[Episode]:
+    def collect_episodes_batched(
+        self,
+        num_episodes: int,
+        temperature: float = 0.7,
+        batch_size: Optional[int] = None
+    ) -> List[Episode]:
+        """Collect multiple episodes in parallel using batched generation."""
+
+        if batch_size is None:
+            batch_size = min(num_episodes, 8)  # Default batch size
 
         episodes = []
 
-        self.logger.debug("Collecting %d episodes", num_episodes)
+        # Process episodes in batches
+        for batch_start in range(0, num_episodes, batch_size):
+            batch_end = min(batch_start + batch_size, num_episodes)
+            current_batch_size = batch_end - batch_start
+
+            # Initialize environments and state tracking for this batch
+            envs = [BlackjackEnv(natural_reward=self.config.natural_reward) for _ in range(current_batch_size)]
+            observations = [env.reset() for env in envs]
+
+            # Track state for each episode in the batch
+            batch_states = {i: {
+                'env': envs[i],
+                'obs': observations[i],
+                'done': False,
+                'states': [],
+                'actions': [],
+                'prompts': [],
+                'responses': [],
+                'rewards': [],
+                'reasonings': [],
+                'history_snapshots': [],
+                'all_logprobs': [],
+                'conversation': [{"role": "system", "content": "You are a clever Blackjack player."}]
+            } for i in range(current_batch_size)}
+
+            max_steps = 50  # Safety limit
+            step = 0
+
+            while any(not batch_states[i]['done'] for i in range(current_batch_size)) and step < max_steps:
+                step += 1
+
+                # Collect prompts from all active (non-done) episodes
+                active_indices = [i for i in range(current_batch_size) if not batch_states[i]['done']]
+
+                if not active_indices:
+                    break
+
+                formatted_prompts = []
+                for i in active_indices:
+                    state = batch_states[i]
+                    prompt = state['env'].get_prompt_for_llm()
+                    state['conversation'].append({"role": "user", "content": prompt})
+
+                    # Store snapshot before generation
+                    history_snapshot = copy.deepcopy(state['conversation'])
+                    state['history_snapshots'].append(history_snapshot)
+
+                    # Format the prompt
+                    try:
+                        formatted = self.tokenizer.apply_chat_template(
+                            history_snapshot,
+                            tokenize=False,
+                            add_generation_prompt=True
+                        )
+                    except Exception as e:
+                        self.logger.debug("Chat template failed (%s), using simple format", e)
+                        parts = []
+                        for message in history_snapshot:
+                            role = message['role'].capitalize()
+                            parts.append(f"{role}: {message['content']}")
+                        parts.append("Assistant:")
+                        formatted = "\n\n".join(parts)
+
+                    formatted_prompts.append(formatted)
+                    state['prompts'].append(prompt)
+
+                # Generate responses in batch
+                responses_and_logprobs = self._generate_responses_batched(formatted_prompts, temperature)
+
+                # Process each response
+                for idx, i in enumerate(active_indices):
+                    state = batch_states[i]
+                    response, logprobs = responses_and_logprobs[idx]
+
+                    state['conversation'].append({"role": "assistant", "content": response})
+                    state['responses'].append(response)
+                    state['all_logprobs'].append(logprobs)
+
+                    # Parse the response
+                    try:
+                        cleaned = response.split('</think>')[-1].strip()
+                        if cleaned.startswith('```'):
+                            cleaned = cleaned.split('\n', 1)[1] if '\n' in cleaned else cleaned[3:]
+                            cleaned = cleaned.rsplit('```', 1)[0] if '```' in cleaned else cleaned
+
+                        parsed = json.loads(cleaned.strip())
+                        action = parsed.get('action')
+                        reasoning = parsed.get('reasoning')
+                    except Exception:
+                        self.logger.debug("Error parsing response: %s", response, exc_info=True)
+                        action = None
+                        reasoning = None
+
+                    if action not in (0, 1):
+                        self.logger.warning("Invalid action '%s', defaulting to stand (0)", action)
+                        action = 0
+
+                    state['states'].append(state['obs']['description'])
+                    state['actions'].append(action)
+                    state['reasonings'].append(reasoning)
+
+                    # Step the environment
+                    obs, reward, done, info = state['env'].step(action)
+                    state['obs'] = obs
+                    state['rewards'].append(reward)
+                    state['done'] = done
+
+            # Create Episode objects from completed batch
+            for i in range(current_batch_size):
+                state = batch_states[i]
+                total_reward = sum(state['rewards'])
+
+                episode = Episode(
+                    states=state['states'],
+                    actions=state['actions'],
+                    prompts=state['prompts'],
+                    responses=state['responses'],
+                    rewards=state['rewards'],
+                    total_reward=total_reward,
+                    reasonings=state['reasonings'],
+                    message_histories=state['history_snapshots'],
+                    logits=state['all_logprobs']
+                )
+                episodes.append(episode)
+
+        return episodes
+
+    def collect_rollouts(self, num_episodes: int, iteration: int) -> List[Episode]:
+        """Collect episodes, using batched generation when possible."""
+
+        # Use batched generation if enabled and not streaming
+        if self.config.use_batched_generation and not self.config.stream_rollouts and not self.config.verbose:
+            self.logger.info("Collecting %d episodes using batched generation (batch_size=%d)",
+                           num_episodes, self.config.generation_batch_size)
+            episodes = self.collect_episodes_batched(
+                num_episodes=num_episodes,
+                temperature=self.config.temperature,
+                batch_size=self.config.generation_batch_size
+            )
+            return episodes
+
+        # Fall back to sequential collection
+        episodes = []
+        self.logger.debug("Collecting %d episodes sequentially", num_episodes)
         iterator = tqdm(
             range(num_episodes),
             disable=self.config.verbose or self.config.stream_rollouts,
@@ -417,7 +627,6 @@ class RLVRTrainer:
                 episode_total=num_episodes
             )
             episodes.append(episode)
-
 
         return episodes
 
@@ -500,7 +709,6 @@ class RLVRTrainer:
         for iteration in range(1, self.config.num_iterations + 1):
             self.logger.info("Starting iteration %d/%d", iteration, self.config.num_iterations)
 
-            # Collect rollouts
             episodes = self.collect_rollouts(self.config.episodes_per_iteration, iteration=iteration)
 
             # Calculate baseline (mean reward)
@@ -515,7 +723,6 @@ class RLVRTrainer:
 
             self.logger.info("Mean reward for iteration %d: %.3f", iteration, mean_reward)
 
-            # Log training episode statistics to wandb
             if self.config.use_wandb:
                 train_logs = {
                     'train/reward_mean': mean_reward,
@@ -551,47 +758,37 @@ class RLVRTrainer:
             gradient_norms = []
             num_training_steps = 0
 
-            for episode in batch_episodes:
-                # Calculate advantage for this episode
-                advantage = episode.total_reward - mean_reward
+            # sample batch
+            batch_episodes = random.sample(valid_episodes, self.config.batch_size)
 
-                # Skip episodes with no advantage
-                if advantage <= 0:
-                    continue
+            # compute advantage
+            advantage = mean_reward 
 
-                # Compute loss for each step in the episode
-                for step_idx, step_logprobs in enumerate(episode.logits):
-                    if step_logprobs is not None:
-                        # Simple policy gradient loss (can be extended to full PPO)
-                        # Loss = -log_prob * advantage
-                        loss = -step_logprobs.mean() * advantage
+   
+            # compute ppo loss
+            old_logprobs = batch_episodes.logits
 
-                        self.optimizer.zero_grad()
-                        loss.backward()
+            # new logprobs
+            new_episodes = self.collect_episodes_batched(self.config.batch_size, self.config.temperature)
+            new_logprobs = new_logprobs.logits
 
-                        # Calculate gradient norm
-                        grad_norm = 0.0
-                        for param in self.model.parameters():
-                            if param.grad is not None:
-                                grad_norm += param.grad.data.norm(2).item() ** 2
-                        grad_norm = grad_norm ** 0.5
-                        gradient_norms.append(grad_norm)
+            # compute ratio
+            ratio = new_logprobs / old_logprobs
+            clip_ratio = torch.clamp(ratio, 1 - self.config.ppo_clip_ratio, 1 + self.config.ppo_clip_ratio)
 
-                        self.optimizer.step()
+            # compute ppo loss
+            ppo_loss = torch.min(ratio * advantage, clip_ratio * advantage)
+            ppo_loss = ppo_loss.mean()
 
-                        total_loss += loss.item()
-                        step_losses.append(loss.item())
-                        num_training_steps += 1
+            # compute total loss
+            total_loss = ppo_loss
 
-                        # Log per-step metrics to wandb
-                        if self.config.use_wandb:
-                            global_step = (iteration - 1) * self.config.episodes_per_iteration * 10 + num_training_steps
-                            wandb.log({
-                                'train/step_loss': loss.item(),
-                                'train/gradient_norm': grad_norm,
-                                'train/advantage': advantage,
-                                'train/learning_rate': self.optimizer.param_groups[0]['lr'],
-                            }, step=global_step)
+            self.optimizer.zero_grad()
+
+            total_loss.backward()
+            self.optimizer.step()
+            
+            
 
             avg_loss = total_loss / max(num_training_steps, 1)
             avg_grad_norm = np.mean(gradient_norms) if gradient_norms else 0.0
@@ -610,7 +807,7 @@ class RLVRTrainer:
                 }, step=iteration)
 
             # Evaluate if needed
-            if self.config.eval_frequency > 0 and iteration % self.config.eval_frequency == 0:
+            if self.config.eval_frequency > 0 and iteration % self.config.eval_frequency == 0 and self.config.eval_episodes > 0:
                 eval_metrics = self.evaluate(self.config.eval_episodes, iteration=iteration)
 
                 # Log metrics
