@@ -590,7 +590,7 @@ class RLVRTrainer:
                     total_reward=total_reward,
                     reasonings=state['reasonings'],
                     message_histories=state['history_snapshots'],
-                    logits=state['all_logprobs']
+                    logits=torch.stack(state['all_logprobs'])
                 )
                 episodes.append(episode)
 
@@ -742,15 +742,10 @@ class RLVRTrainer:
 
                 wandb.log(train_logs, step=iteration)
 
-            # Filter episodes with valid logits (non-streaming)
-            valid_episodes = [ep for ep in episodes if ep.logits and ep.logits[0] is not None]
 
-            if not valid_episodes:
-                self.logger.warning("No valid episodes with logits found. Skipping training for this iteration.")
-                continue
 
             # Sample batch from valid episodes
-            batch_episodes = random.sample(valid_episodes, min(self.config.batch_size, len(valid_episodes)))
+            batch_episodes = episodes
 
             # Train on the batch
             total_loss = 0.0
@@ -763,14 +758,15 @@ class RLVRTrainer:
 
             # compute advantage
             advantage = mean_reward 
-
    
             # compute ppo loss
-            old_logprobs = batch_episodes.logprobs
+            old_logprobs = [ep.logits for ep in batch_episodes]
+            print(old_logprobs)
 
             # new logprobs
             new_episodes = self.collect_episodes_batched(self.config.batch_size, self.config.temperature)
-            new_logprobs = new_logprobs.logprobs
+            new_logprobs = [ep.logits.mean(axis=0) for ep in new_episodes]
+            print(new_logprobs)
 
             # compute ratio
             ratio = new_logprobs / old_logprobs
@@ -788,8 +784,6 @@ class RLVRTrainer:
             total_loss.backward()
             self.optimizer.step()
             
-            
-
             avg_loss = total_loss / max(num_training_steps, 1)
             avg_grad_norm = np.mean(gradient_norms) if gradient_norms else 0.0
             self.logger.info("Iteration %d complete. Avg loss: %.4f, Avg grad norm: %.4f",
