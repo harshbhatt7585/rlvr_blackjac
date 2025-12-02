@@ -766,11 +766,11 @@ class RLVRTrainer:
 
    
             # compute ppo loss
-            old_logprobs = batch_episodes.logits
+            old_logprobs = batch_episodes.logprobs
 
             # new logprobs
             new_episodes = self.collect_episodes_batched(self.config.batch_size, self.config.temperature)
-            new_logprobs = new_logprobs.logits
+            new_logprobs = new_logprobs.logprobs
 
             # compute ratio
             ratio = new_logprobs / old_logprobs
