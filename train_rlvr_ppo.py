@@ -1,5 +1,5 @@
 """
-RLVR Training Script for Blackjack with Gemma
+RLVR Training Script for Blackjack
 
 This script implements Reinforcement Learning with Verifiable Rewards (RLVR)
 to train a Gemma model to play Blackjack optimally.
@@ -37,6 +37,7 @@ from transformers import (
 )
 from datasets import Dataset
 import torch.nn as nn
+import torch.nn.functional as F
 from peft import (
     LoraConfig,
     get_peft_model,
@@ -61,7 +62,7 @@ class RLVRConfig:
     """Configuration for RLVR training."""
 
     # Model settings
-    model_name: str = "google/gemma-3-1b-it"  # or "google/gemma-7b-it"
+    model_name: str = "meta-llama/Llama-3.2-1B-Instruct"  # or "google/gemma-7b-it"
 
     # Training settings
     num_iterations: int = 10
@@ -74,6 +75,7 @@ class RLVRConfig:
     temperature: float = 0.7
     reward_threshold: float = 0.0  # Only train on episodes with reward >= this
     advantage_weighting: bool = True  # Weight examples by advantage
+    ppo_clip_ratio: float = 0.2  # PPO clipping parameter
 
     # LoRA settings
     use_lora: bool = True  # Use LoRA for efficient fine-tuning
@@ -184,6 +186,8 @@ class RLVRTrainer:
             self.model = get_peft_model(self.model, lora_config)
             self.model.print_trainable_parameters()
 
+        # Initialize optimizer
+        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=config.learning_rate)
 
         self.history = []
 
@@ -216,6 +220,7 @@ class RLVRTrainer:
             "pad_token_id": self.tokenizer.pad_token_id,
             "eos_token_id": self.tokenizer.eos_token_id,
             "output_scores": True,
+            "return_dict_in_generate": True,
         }
 
         with torch.no_grad():
@@ -241,20 +246,21 @@ class RLVRTrainer:
                 thread.join()
                 print()
 
-                return "".join(chunks)
+                # Return tuple with None logprobs for streaming (can't get logprobs with streaming)
+                return "".join(chunks), None
 
             outputs = self.model.generate(**generation_kwargs)
 
         logits = outputs.scores
         logprobs = []
         for logit in logits:
-            logprob = F.log_softmax(logits, dim=-1)
+            logprob = F.log_softmax(logit, dim=-1)
             logprobs.append(logprob)
-        
+
         logprobs = torch.stack(logprobs)
 
         return (self.tokenizer.decode(
-            outputs[0][inputs['input_ids'].shape[1]:],
+            outputs.sequences[0][inputs['input_ids'].shape[1]:],
             skip_special_tokens=True
         ), logprobs)
 
@@ -277,6 +283,7 @@ class RLVRTrainer:
         rewards: List[float] = []
         reasonings: List[str] = []
         history_snapshots: List[List[Dict[str, str]]] = []
+        all_logprobs: List = []
 
         conversation: List[Dict[str, str]] = [
             {"role": "system", "content": "You are a clever Blackjack player."}
@@ -368,7 +375,7 @@ class RLVRTrainer:
             reasonings.append(reasoning)
             prompts.append(prompt)
             responses.append(response_str)
-            logprobs.append(logprobs)
+            all_logprobs.append(logprobs)
 
             obs, reward, done, info = self.env.step(action)
             rewards.append(reward)
@@ -387,7 +394,8 @@ class RLVRTrainer:
             rewards=rewards,
             total_reward=total_reward,
             reasonings=reasonings,
-            message_histories=history_snapshots
+            message_histories=history_snapshots,
+            logits=all_logprobs
         )
 
     def collect_rollouts(self, num_episodes: int, iteration: int) -> List[Episode]:
@@ -487,27 +495,153 @@ class RLVRTrainer:
         return metrics
 
     def ppo_train(self):
-        
-        episodes = self.collect_rollouts(self.config.episodes_per_iteration, iteration=self.config.num_iterations)
-
-        # sample from episodes
         import random
-        episode = random.sample(episodes, self.config.batch_size)
-        
-        old_logits = episode.logits
-        
-        # predict logits
-        new_episode = self.collect_episode()
-        new_logits = new_episode.logits
 
-        # ppo loss compute
-        ratio = torch.exp(new_logits.mean(axis=0) - old_logits.mean(axis=0))
-        advantage = episode.total_reward - sum([ep.total_reward for ep in episodes]) / len(episodes)
-        ppo_loss = -torch.min(ratio * advantage, ratio * advantage * self.config.ppo_clip_ratio).mean()
+        for iteration in range(1, self.config.num_iterations + 1):
+            self.logger.info("Starting iteration %d/%d", iteration, self.config.num_iterations)
 
-        self.optimizer.zero_grad()
-        ppo_loss.backward()
-        self.optimizer.step()
+            # Collect rollouts
+            episodes = self.collect_rollouts(self.config.episodes_per_iteration, iteration=iteration)
+
+            # Calculate baseline (mean reward)
+            mean_reward = sum([ep.total_reward for ep in episodes]) / len(episodes)
+            std_reward = np.std([ep.total_reward for ep in episodes])
+            min_reward = min([ep.total_reward for ep in episodes])
+            max_reward = max([ep.total_reward for ep in episodes])
+            win_rate = np.mean([ep.total_reward > 0 for ep in episodes])
+            lose_rate = np.mean([ep.total_reward < 0 for ep in episodes])
+            draw_rate = np.mean([ep.total_reward == 0 for ep in episodes])
+            avg_episode_length = np.mean([len(ep.actions) for ep in episodes])
+
+            self.logger.info("Mean reward for iteration %d: %.3f", iteration, mean_reward)
+
+            # Log training episode statistics to wandb
+            if self.config.use_wandb:
+                train_logs = {
+                    'train/reward_mean': mean_reward,
+                    'train/reward_std': std_reward,
+                    'train/reward_min': min_reward,
+                    'train/reward_max': max_reward,
+                    'train/win_rate': win_rate,
+                    'train/lose_rate': lose_rate,
+                    'train/draw_rate': draw_rate,
+                    'train/episode_length': avg_episode_length,
+                    'train/num_episodes': len(episodes),
+                }
+
+                # Log histogram of episode rewards
+                episode_rewards = [ep.total_reward for ep in episodes]
+                train_logs['train/reward_histogram'] = wandb.Histogram(episode_rewards)
+
+                wandb.log(train_logs, step=iteration)
+
+            # Filter episodes with valid logits (non-streaming)
+            valid_episodes = [ep for ep in episodes if ep.logits and ep.logits[0] is not None]
+
+            if not valid_episodes:
+                self.logger.warning("No valid episodes with logits found. Skipping training for this iteration.")
+                continue
+
+            # Sample batch from valid episodes
+            batch_episodes = random.sample(valid_episodes, min(self.config.batch_size, len(valid_episodes)))
+
+            # Train on the batch
+            total_loss = 0.0
+            step_losses = []
+            gradient_norms = []
+            num_training_steps = 0
+
+            for episode in batch_episodes:
+                # Calculate advantage for this episode
+                advantage = episode.total_reward - mean_reward
+
+                # Skip episodes with no advantage
+                if advantage <= 0:
+                    continue
+
+                # Compute loss for each step in the episode
+                for step_idx, step_logprobs in enumerate(episode.logits):
+                    if step_logprobs is not None:
+                        # Simple policy gradient loss (can be extended to full PPO)
+                        # Loss = -log_prob * advantage
+                        loss = -step_logprobs.mean() * advantage
+
+                        self.optimizer.zero_grad()
+                        loss.backward()
+
+                        # Calculate gradient norm
+                        grad_norm = 0.0
+                        for param in self.model.parameters():
+                            if param.grad is not None:
+                                grad_norm += param.grad.data.norm(2).item() ** 2
+                        grad_norm = grad_norm ** 0.5
+                        gradient_norms.append(grad_norm)
+
+                        self.optimizer.step()
+
+                        total_loss += loss.item()
+                        step_losses.append(loss.item())
+                        num_training_steps += 1
+
+                        # Log per-step metrics to wandb
+                        if self.config.use_wandb:
+                            global_step = (iteration - 1) * self.config.episodes_per_iteration * 10 + num_training_steps
+                            wandb.log({
+                                'train/step_loss': loss.item(),
+                                'train/gradient_norm': grad_norm,
+                                'train/advantage': advantage,
+                                'train/learning_rate': self.optimizer.param_groups[0]['lr'],
+                            }, step=global_step)
+
+            avg_loss = total_loss / max(num_training_steps, 1)
+            avg_grad_norm = np.mean(gradient_norms) if gradient_norms else 0.0
+            self.logger.info("Iteration %d complete. Avg loss: %.4f, Avg grad norm: %.4f",
+                           iteration, avg_loss, avg_grad_norm)
+
+            # Log aggregated training metrics
+            if self.config.use_wandb and num_training_steps > 0:
+                wandb.log({
+                    'train/loss': avg_loss,
+                    'train/loss_std': np.std(step_losses),
+                    'train/gradient_norm_mean': avg_grad_norm,
+                    'train/gradient_norm_std': np.std(gradient_norms) if gradient_norms else 0.0,
+                    'train/num_training_steps': num_training_steps,
+                    'train/loss_histogram': wandb.Histogram(step_losses),
+                }, step=iteration)
+
+            # Evaluate if needed
+            if self.config.eval_frequency > 0 and iteration % self.config.eval_frequency == 0:
+                eval_metrics = self.evaluate(self.config.eval_episodes, iteration=iteration)
+
+                # Log metrics
+                record = {
+                    'iteration': iteration,
+                    'episodes': len(episodes),
+                    'train/loss': avg_loss,
+                    'reward/mean': mean_reward,
+                    'eval/mean_reward': eval_metrics['mean_reward'],
+                    'eval/win_rate': eval_metrics['win_rate']
+                }
+                self._log_iteration(record)
+
+                if self.config.use_wandb:
+                    # Log all evaluation metrics
+                    eval_logs = {
+                        'eval/mean_reward': eval_metrics['mean_reward'],
+                        'eval/std_reward': eval_metrics['std_reward'],
+                        'eval/min_reward': eval_metrics['min_reward'],
+                        'eval/max_reward': eval_metrics['max_reward'],
+                        'eval/win_rate': eval_metrics['win_rate'],
+                        'eval/lose_rate': eval_metrics['lose_rate'],
+                        'eval/draw_rate': eval_metrics['draw_rate'],
+                    }
+                    wandb.log(eval_logs, step=iteration)
+
+            # Save checkpoint
+            if iteration % 5 == 0 or iteration == self.config.num_iterations:
+                checkpoint_name = f"iteration_{iteration}"
+                save_path = self._save_checkpoint(checkpoint_name)
+                self.logger.info("Saved checkpoint to %s", save_path)
 
 
 

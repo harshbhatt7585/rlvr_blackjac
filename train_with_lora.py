@@ -17,7 +17,7 @@ def train_with_lora():
     print("="*60)
 
     config = RLVRConfig(
-        model_name="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
+        model_name="meta-llama/Llama-3.2-1B-Instruct",
 
         # LoRA settings - balanced
         use_lora=True,

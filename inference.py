@@ -5,10 +5,11 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from env import done
 import torch
+
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
-
 
 def select_device(prefer_mps: bool = True) -> torch.device:
     """Pick the best available device."""
