@@ -670,23 +670,19 @@ class RLVRTrainer:
 
             # Compute gradient norm
             grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-            gradient_norms.append(grad_norm.item())
 
             self.optimizer.step()
             step_losses.append(total_loss.item())
 
             avg_loss = total_loss.item() if isinstance(total_loss, torch.Tensor) else float(total_loss)
-            avg_grad_norm = np.mean(gradient_norms) if gradient_norms else 0.0
-            self.logger.info("Iteration %d complete. Avg loss: %.4f, Avg grad norm: %.4f",
-                           iteration, avg_loss, avg_grad_norm)
+            self.logger.info("Iteration %d complete. Avg loss: %.4f",
+                           iteration, avg_loss)
 
             # Log aggregated training metrics
             if self.config.use_wandb and num_training_steps > 0:
                 log_dict = {
                     'train/loss': avg_loss,
                     'train/loss_std': np.std(step_losses) if step_losses else 0.0,
-                    'train/gradient_norm_mean': avg_grad_norm,
-                    'train/gradient_norm_std': np.std(gradient_norms) if gradient_norms else 0.0,
                     'train/num_training_steps': num_training_steps,
                 }
                 if step_losses and all(np.isfinite(loss) for loss in step_losses):
