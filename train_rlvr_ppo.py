@@ -129,10 +129,10 @@ class ReplayBuffer:
         self.capacity = capacity
         self.buffer = []
     
-    def add(self, episode: Episode):
+    def add(self, episodes: List[Episode]):
         if len(self.buffer) >= self.capacity:
             self.buffer.pop(0)
-        self.buffer.append(episode)
+        self.buffer.extend(episodes)
     
     def sample(self, batch_size: int) -> List[Episode]:
         return random.sample(self.buffer, batch_size)
@@ -227,6 +227,8 @@ class RLVRTrainer:
                 config=asdict(config)
             )
             self.logger.info("W&B logging enabled: %s", wandb.run.url)
+
+        self.replay_buffer = ReplayBuffer(capacity=config.replay_buffer_capacity)
 
 
     def _generate_response(
@@ -737,6 +739,9 @@ class RLVRTrainer:
             self.logger.info("Starting iteration %d/%d", iteration, self.config.num_iterations)
 
             episodes = self.collect_rollouts(self.config.episodes_per_iteration, iteration=iteration)
+            self.replay_buffer.add(episodes)
+
+
 
             print("logits shape: ", episodes[0].logits.shape)
 
