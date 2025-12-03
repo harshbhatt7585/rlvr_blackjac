@@ -669,7 +669,7 @@ class RLVRTrainer:
             total_loss.backward()
 
             # Compute gradient norm
-            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
 
             self.optimizer.step()
             step_losses.append(total_loss.item())
