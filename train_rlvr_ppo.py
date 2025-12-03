@@ -97,11 +97,9 @@ class RLVRConfig:
 
     # Verbosity
     verbose: bool = False
-    stream_rollouts: bool = True  # Stream model tokens during rollouts by default
+    stream_rollouts: bool = False  # Stream model tokens during rollouts
 
-    # Batched generation settings
-    use_batched_generation: bool = True  # Use batched generation for faster rollouts
-    generation_batch_size: int = 8  # Number of episodes to generate in parallel
+    # Replay buffer settings
     replay_buffer_capacity: int = 1000
 
 
@@ -116,7 +114,8 @@ class Episode:
     total_reward: float  # Final episode reward
     reasonings: List[str]  # Reasoning for each action
     message_histories: List[List[Dict[str, str]]]  # Conversation context per turn
-    logits: torch.Tensor  # Logits of the episode
+    logits: List  # List of log probability tensors for each step
+    response_token_ids: List[List[int]]  # Token IDs for each response
 
 
 import random
@@ -274,84 +273,106 @@ class RLVRTrainer:
                 thread.join()
                 print()
 
-                return "".join(chunks), None
+                return "".join(chunks), None, None
 
             outputs = self.model.generate(**generation_kwargs)
 
-        logits = outputs.scores
-        logprobs = []
-        for logit in logits:
-            logprob = F.log_softmax(logit, dim=-1)
-            logprobs.append(logprob)
+        # Extract generated tokens
+        generated_tokens = outputs.sequences[0][inputs['input_ids'].shape[1]:].tolist()
 
-        logprobs = torch.stack(logprobs)
+        # Extract log probabilities for the actual generated tokens
+        logprobs_for_tokens = []
+        for j, token_id in enumerate(generated_tokens):
+            if j < len(outputs.scores):
+                logit = outputs.scores[j][0]  # Get logits for first (and only) batch element
+                logprob_dist = F.log_softmax(logit, dim=-1)
+                token_logprob = logprob_dist[token_id]
+                logprobs_for_tokens.append(token_logprob)
 
-        return (self.tokenizer.decode(
+        if logprobs_for_tokens:
+            logprobs = torch.stack(logprobs_for_tokens)  # Shape: [seq_len]
+        else:
+            logprobs = None
+
+        decoded_text = self.tokenizer.decode(
             outputs.sequences[0][inputs['input_ids'].shape[1]:],
             skip_special_tokens=True
-        ), logprobs)
+        )
+
+        return decoded_text, logprobs, generated_tokens
 
     def _generate_responses_batched(
         self,
         formatted_prompts: List[str],
         temperature: float
     ) -> List[tuple]:
-        """Generate responses for multiple prompts in a single batch."""
+        """Generate responses for multiple prompts sequentially (not truly batched due to padding issues)."""
 
-        original_padding_side = self.tokenizer.padding_side
-        self.tokenizer.padding_side = "left"
+        results_texts = []
+        results_logprobs = []
+        results_token_ids = []
 
-        inputs = self.tokenizer(
-            formatted_prompts,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=2048
-        ).to(self.model.device)
+        # Generate each prompt individually to avoid left-padding alignment issues
+        for prompt in formatted_prompts:
+            inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
 
-        generation_kwargs = {
-            **{k: v for k, v in inputs.items()},
-            "max_new_tokens": 756,
-            "temperature": temperature,
-            "do_sample": temperature > 0.0,
-            "top_p": 0.9,
-            "pad_token_id": self.tokenizer.pad_token_id,
-            "eos_token_id": self.tokenizer.eos_token_id,
-            "output_scores": True,
-            "return_dict_in_generate": True,
-        }
+            generation_kwargs = {
+                **{k: v for k, v in inputs.items()},
+                "max_new_tokens": 756,
+                "temperature": temperature,
+                "do_sample": temperature > 0.0,
+                "top_p": 0.9,
+                "pad_token_id": self.tokenizer.pad_token_id,
+                "eos_token_id": self.tokenizer.eos_token_id,
+                "output_scores": True,
+                "return_dict_in_generate": True,
+            }
 
-        with torch.no_grad():
-            outputs = self.model.generate(**generation_kwargs)
+            with torch.no_grad():
+                outputs = self.model.generate(**generation_kwargs)
 
-        # Process each response in the batch
-        results = []
-        batch_size = len(formatted_prompts)
-
-        for i in range(batch_size):
-            # Get the generated tokens for this sample
-            input_length = inputs['input_ids'][i].ne(self.tokenizer.pad_token_id).sum().item()
-            generated_tokens = outputs.sequences[i][input_length:]
+            # Extract generated tokens
+            generated_tokens = outputs.sequences[0][inputs['input_ids'].shape[1]:].tolist()
 
             # Decode the response
             response = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
+            # Extract log probabilities for the actual generated tokens
+            token_ids_list = []
             logprobs_list = []
-            for logit in outputs.scores:
-                logprob = F.log_softmax(logit[i:i+1], dim=-1)
-                logprobs_list.append(logprob)
 
-            if logprobs_list:
-                logprobs = torch.stack(logprobs_list)
-            else:
-                logprobs = None
+            for j, token_id in enumerate(generated_tokens):
+                if j < len(outputs.scores):
+                    token_ids_list.append(token_id)
 
-            results.append((response, logprobs))
+                    logit = outputs.scores[j][0]  # Single batch element
+                    logprob_dist = F.log_softmax(logit, dim=-1)
+                    token_logprob = logprob_dist[token_id]
 
-        self.tokenizer.padding_side = original_padding_side
+                    logprobs_list.append(token_logprob)
 
-        return results
+            results_texts.append(response)
+            results_logprobs.append(torch.stack(logprobs_list) if logprobs_list else torch.tensor([]))
+            results_token_ids.append(torch.tensor(token_ids_list, device=self.model.device))
 
+        # Stack into batch tensors
+        batch_size = len(formatted_prompts)
+        max_len = max(len(tids) for tids in results_token_ids) if results_token_ids else 0
+
+        if max_len == 0:
+            # No tokens generated
+            batch_token_ids = torch.zeros((batch_size, 1), dtype=torch.long, device=self.model.device)
+            batch_logprobs = torch.zeros((batch_size, 1), dtype=torch.float, device=self.model.device)
+        else:
+            batch_token_ids = torch.zeros((batch_size, max_len), dtype=torch.long, device=self.model.device)
+            batch_logprobs = torch.zeros((batch_size, max_len), dtype=torch.float, device=self.model.device)
+
+            for i in range(batch_size):
+                seq_len = len(results_token_ids[i])
+                batch_token_ids[i, :seq_len] = results_token_ids[i]
+                batch_logprobs[i, :seq_len] = results_logprobs[i]
+
+        return results_texts, batch_logprobs, batch_token_ids
 
     def collect_episode(
         self,
@@ -372,6 +393,7 @@ class RLVRTrainer:
         reasonings: List[str] = []
         history_snapshots: List[List[Dict[str, str]]] = []
         all_logprobs: List = []
+        all_token_ids: List[List[int]] = []
 
         conversation: List[Dict[str, str]] = [
             {"role": "system", "content": "You are a clever Blackjack player."}
@@ -423,7 +445,7 @@ class RLVRTrainer:
 
             inputs = self.tokenizer(formatted, return_tensors="pt").to(self.model.device)
 
-            response, logprobs = self._generate_response(
+            response, logprobs, token_ids = self._generate_response(
                 inputs,
                 temperature,
                 stream=stream_enabled,
@@ -464,6 +486,7 @@ class RLVRTrainer:
             prompts.append(prompt)
             responses.append(response_str)
             all_logprobs.append(logprobs)
+            all_token_ids.append(token_ids if token_ids is not None else [])
 
             obs, reward, done, info = self.env.step(action)
             rewards.append(reward)
@@ -483,7 +506,8 @@ class RLVRTrainer:
             total_reward=total_reward,
             reasonings=reasonings,
             message_histories=history_snapshots,
-            logits=all_logprobs
+            logits=all_logprobs,
+            response_token_ids=all_token_ids
         )
 
     def collect_episodes_batched(
@@ -521,6 +545,7 @@ class RLVRTrainer:
                 'reasonings': [],
                 'history_snapshots': [],
                 'all_logprobs': [],
+                'all_token_ids': [],
                 'conversation': [{"role": "system", "content": "You are a clever Blackjack player."}]
             } for i in range(current_batch_size)}
 
@@ -566,17 +591,26 @@ class RLVRTrainer:
                     state['prompts'].append(prompt)
 
                 # Generate responses in batch
-                responses_and_logprobs = self._generate_responses_batched(formatted_prompts, temperature)
+                responses_data = self._generate_responses_batched(formatted_prompts, temperature)
+
+                # responses_data returns: (texts, token_logprobs, generated_ids)
+                # texts: list of strings
+                # token_logprobs: [B, seq_len] - logprobs for sampled tokens
+                # generated_ids: [B, seq_len] - token IDs
 
                 # Process each response
                 for idx, i in enumerate(active_indices):
                     state = batch_states[i]
-                    response, logprobs = responses_and_logprobs[idx]
-                    logprobs = logprobs.squeeze(1).mean(dim=1)
+
+                    # Extract data for this specific batch element
+                    response = responses_data[0][idx] if isinstance(responses_data[0], list) else responses_data[0]
+                    logprobs = responses_data[1][idx] if len(responses_data[1].shape) > 1 else responses_data[1]  # [seq_len]
+                    token_ids = responses_data[2][idx] if len(responses_data[2].shape) > 1 else responses_data[2]  # [seq_len]
 
                     state['conversation'].append({"role": "assistant", "content": response})
                     state['responses'].append(response)
                     state['all_logprobs'].append(logprobs)
+                    state['all_token_ids'].append(token_ids)
 
                     # Parse the response
                     try:
@@ -621,33 +655,25 @@ class RLVRTrainer:
                     total_reward=total_reward,
                     reasonings=state['reasonings'],
                     message_histories=state['history_snapshots'],
-                    logits=torch.stack(state['all_logprobs']).squeeze(0)
+                    logits=state['all_logprobs'],  # Keep as list of tensors
+                    response_token_ids=state['all_token_ids']
                 )
                 episodes.append(episode)
 
         return episodes
 
     def collect_rollouts(self, num_episodes: int, iteration: int) -> List[Episode]:
-        """Collect episodes, using batched generation when possible."""
+        """Collect episodes sequentially to ensure correct trajectories."""
 
-        # Use batched generation if enabled and not streaming
-        if self.config.use_batched_generation and not self.config.stream_rollouts and not self.config.verbose:
-            self.logger.info("Collecting %d episodes using batched generation (batch_size=%d)",
-                           num_episodes, self.config.generation_batch_size)
-            episodes = self.collect_episodes_batched(
-                num_episodes=num_episodes,
-                temperature=self.config.temperature,
-                batch_size=self.config.generation_batch_size
-            )
-            return episodes
-
-        # Fall back to sequential collection
         episodes = []
-        self.logger.debug("Collecting %d episodes sequentially", num_episodes)
+        self.logger.info("Collecting %d episodes sequentially", num_episodes)
+
         iterator = tqdm(
             range(num_episodes),
+            desc=f"Iteration {iteration}/{self.config.num_iterations}",
             disable=self.config.verbose or self.config.stream_rollouts,
         )
+
         for idx in iterator:
             episode = self.collect_episode(
                 temperature=self.config.temperature,
@@ -743,10 +769,6 @@ class RLVRTrainer:
             episodes = self.collect_rollouts(self.config.episodes_per_iteration, iteration=iteration)
             self.replay_buffer.add(episodes)
 
-
-
-            print("logits shape: ", episodes[0].logits.shape)
-
             # Calculate baseline (mean reward)
             mean_reward = sum([ep.total_reward for ep in episodes]) / len(episodes)
             std_reward = np.std([ep.total_reward for ep in episodes])
@@ -778,62 +800,165 @@ class RLVRTrainer:
 
                 wandb.log(train_logs, step=iteration)
 
-
-
             # Train on the batch
             total_loss = 0.0
             step_losses = []
             gradient_norms = []
             num_training_steps = 0
 
-            # sample batch
-            batch_episodes = self.replay_buffer.sample(self.config.batch_size)
+            # sample batch (use all available episodes if buffer is smaller than batch_size)
+            actual_batch_size = min(self.config.batch_size, len(self.replay_buffer))
+            if actual_batch_size == 0:
+                self.logger.warning("Replay buffer is empty, skipping training")
+                continue
 
-            print("batch_episodes shape: ", len(batch_episodes))
+            batch_episodes = self.replay_buffer.sample(actual_batch_size)
 
-            # compute advantage
-            advantage = mean_reward 
-   
-            # compute ppo loss
-            old_logprobs = torch.stack([ep.logits for ep in batch_episodes])
-            print(old_logprobs.shape)
+            # For PPO, we need to recompute logprobs for the same trajectories with current policy
+            # Collect old logprobs (detached) and advantages
+            batch_size = len(batch_episodes)
+            batch_losses = []
 
-            # new logprobs
-            new_episodes = self.collect_episodes_batched(self.config.batch_size, self.config.temperature)
-            new_logprobs = torch.stack([ep.logits for ep in new_episodes])
-            print(new_logprobs.shape)
+            for ep_idx, episode in enumerate(batch_episodes):
+                # Compute advantage for this episode (reward - baseline)
+                advantage = episode.total_reward - mean_reward
 
-            # compute ratio
-            ratio = new_logprobs.mean(dim=1) / old_logprobs.mean(dim=1)
-            clip_ratio = torch.clamp(ratio, 1 - self.config.ppo_clip_ratio, 1 + self.config.ppo_clip_ratio)
+                # Recompute logprobs for this trajectory with current policy (with gradients)
+                for step_idx, history in enumerate(episode.message_histories):
+                    # Get the stored token IDs from collection
+                    response_token_ids = episode.response_token_ids[step_idx]
 
-            # compute ppo loss
-            ppo_loss = torch.min(ratio * advantage, clip_ratio * advantage)
-            ppo_loss = ppo_loss.mean()
+                    if len(response_token_ids) == 0:
+                        continue  # Skip if no response tokens
 
-            # compute total loss
-            total_loss = ppo_loss
+                    # Format the prompt
+                    try:
+                        formatted = self.tokenizer.apply_chat_template(
+                            history,
+                            tokenize=False,
+                            add_generation_prompt=True
+                        )
+                    except Exception as e:
+                        parts = []
+                        for message in history:
+                            role = message['role'].capitalize()
+                            parts.append(f"{role}: {message['content']}")
+                        parts.append("Assistant:")
+                        formatted = "\n\n".join(parts)
 
-            self.optimizer.zero_grad()
+                    # Tokenize prompt
+                    inputs = self.tokenizer(formatted, return_tensors="pt").to(self.model.device)
+                    prompt_length = inputs['input_ids'].shape[1]
 
-            total_loss.backward()
-            self.optimizer.step()
-            
-            avg_loss = total_loss / max(num_training_steps, 1)
+                    # Create full input (prompt + response tokens)
+                    # Ensure response_token_ids is 2D: [1, seq_len]
+                    if isinstance(response_token_ids, list):
+                        response_token_ids = torch.tensor([response_token_ids], device=self.model.device)
+                    elif len(response_token_ids.shape) == 1:
+                        response_token_ids = response_token_ids.unsqueeze(0)
+                    elif response_token_ids.shape[0] > 1:
+                        # If batched, take only the first one (shouldn't happen in training)
+                        response_token_ids = response_token_ids[0:1]
+
+                    full_input_ids = torch.cat([inputs['input_ids'], response_token_ids], dim=1)
+
+                    # Forward pass with gradients on the full sequence
+                    outputs = self.model(input_ids=full_input_ids)
+
+                    # Get the actual token sequence (flatten if needed)
+                    if len(response_token_ids.shape) == 2:
+                        response_tokens_flat = response_token_ids[0]  # [seq_len]
+                    else:
+                        response_tokens_flat = response_token_ids
+
+                    seq_len = response_tokens_flat.shape[0]
+
+                    # Get logits for the response part (shift by 1 for next token prediction)
+                    response_logits = outputs.logits[0, prompt_length-1:prompt_length-1+seq_len, :]
+
+                    # Get log probabilities for the actual generated tokens
+                    log_probs = F.log_softmax(response_logits, dim=-1)
+
+                    # Extract log probabilities for the actual tokens that were generated
+                    selected_log_probs = log_probs[range(seq_len), response_tokens_flat]
+
+                    # Get old log probabilities for this step (detached)
+                    old_step_logprobs = episode.logits[step_idx]
+
+                    if old_step_logprobs is None:
+                        # Skip if we don't have old logprobs (e.g., from streaming)
+                        continue
+
+                    old_step_logprobs = old_step_logprobs.detach().to(self.model.device)
+
+                    # The old logprobs might be:
+                    # 1. [seq_len] - just the logprobs for sampled tokens (from your custom generation)
+                    # 2. [seq_len, vocab_size] - full distribution
+
+                    if len(old_step_logprobs.shape) == 1:
+                        # Case 1: Already extracted logprobs for sampled tokens
+                        old_selected_log_probs = old_step_logprobs
+                    else:
+                        # Case 2: Full distribution, need to extract for specific tokens
+                        old_selected_log_probs = old_step_logprobs[range(seq_len), response_tokens_flat]
+
+                    # Average over tokens
+                    new_logprob_mean = selected_log_probs.mean()
+                    old_logprob_mean = old_selected_log_probs.mean()
+
+                    # Compute ratio
+                    ratio = torch.exp(new_logprob_mean - old_logprob_mean)
+
+                    # Check for invalid values
+                    if torch.isnan(ratio) or torch.isinf(ratio):
+                        self.logger.warning(f"Invalid ratio detected (nan/inf), skipping step. new_logprob: {new_logprob_mean.item():.4f}, old_logprob: {old_logprob_mean.item():.4f}")
+                        continue
+
+                    # Clip ratio
+                    clip_ratio = torch.clamp(ratio, 1 - self.config.ppo_clip_ratio, 1 + self.config.ppo_clip_ratio)
+
+                    # Convert advantage to tensor
+                    advantage_tensor = torch.tensor(advantage, dtype=torch.float32, device=self.model.device)
+
+                    # Compute PPO loss (we want to maximize, so minimize negative)
+                    ppo_loss = -torch.min(ratio * advantage_tensor, clip_ratio * advantage_tensor)
+
+                    batch_losses.append(ppo_loss)
+
+            if batch_losses:
+                total_loss = torch.stack(batch_losses).mean()
+                num_training_steps = len(batch_losses)
+
+                self.optimizer.zero_grad()
+                total_loss.backward()
+
+                # Compute gradient norm
+                grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                gradient_norms.append(grad_norm.item())
+
+                self.optimizer.step()
+                step_losses.append(total_loss.item())
+            else:
+                total_loss = torch.tensor(0.0)
+
+            avg_loss = total_loss.item() if isinstance(total_loss, torch.Tensor) else float(total_loss)
             avg_grad_norm = np.mean(gradient_norms) if gradient_norms else 0.0
             self.logger.info("Iteration %d complete. Avg loss: %.4f, Avg grad norm: %.4f",
                            iteration, avg_loss, avg_grad_norm)
 
             # Log aggregated training metrics
             if self.config.use_wandb and num_training_steps > 0:
-                wandb.log({
+                log_dict = {
                     'train/loss': avg_loss,
-                    'train/loss_std': np.std(step_losses),
+                    'train/loss_std': np.std(step_losses) if step_losses else 0.0,
                     'train/gradient_norm_mean': avg_grad_norm,
                     'train/gradient_norm_std': np.std(gradient_norms) if gradient_norms else 0.0,
                     'train/num_training_steps': num_training_steps,
-                    'train/loss_histogram': wandb.Histogram(step_losses),
-                }, step=iteration)
+                }
+                # Only add histogram if we have valid step losses
+                if step_losses and all(np.isfinite(loss) for loss in step_losses):
+                    log_dict['train/loss_histogram'] = wandb.Histogram(step_losses)
+                wandb.log(log_dict, step=iteration)
 
             # Evaluate if needed
             if self.config.eval_frequency > 0 and iteration % self.config.eval_frequency == 0 and self.config.eval_episodes > 0:
