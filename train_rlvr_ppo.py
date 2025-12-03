@@ -502,156 +502,7 @@ class RLVRTrainer:
             response_token_ids=all_token_ids
         )
 
-    def collect_episodes_batched(
-        self,
-        num_episodes: int,
-        temperature: float = 0.7,
-        batch_size: Optional[int] = None
-    ) -> List[Episode]:
 
-        if batch_size is None:
-            batch_size = min(num_episodes, 8)  # Default batch size
-
-        episodes = []
-
-        # Process episodes in batches
-        for batch_start in range(0, num_episodes, batch_size):
-            batch_end = min(batch_start + batch_size, num_episodes)
-            current_batch_size = batch_end - batch_start
-
-            # Initialize environments and state tracking for this batch
-            envs = [BlackjackEnv(natural_reward=self.config.natural_reward) for _ in range(current_batch_size)]
-            observations = [env.reset() for env in envs]
-
-            # Track state for each episode in the batch
-            batch_states = {i: {
-                'env': envs[i],
-                'obs': observations[i],
-                'done': False,
-                'states': [],
-                'actions': [],
-                'prompts': [],
-                'responses': [],
-                'rewards': [],
-                'reasonings': [],
-                'history_snapshots': [],
-                'all_logprobs': [],
-                'all_token_ids': [],
-                'conversation': [{"role": "system", "content": "You are a clever Blackjack player."}]
-            } for i in range(current_batch_size)}
-
-            max_steps = 50  # Safety limit
-            step = 0
-
-            while any(not batch_states[i]['done'] for i in range(current_batch_size)) and step < max_steps:
-                step += 1
-
-                # Collect prompts from all active (non-done) episodes
-                active_indices = [i for i in range(current_batch_size) if not batch_states[i]['done']]
-
-                if not active_indices:
-                    break
-
-                formatted_prompts = []
-                for i in active_indices:
-                    state = batch_states[i]
-                    prompt = state['env'].get_prompt_for_llm()
-                    state['conversation'].append({"role": "user", "content": prompt})
-
-                    # Store snapshot before generation
-                    history_snapshot = copy.deepcopy(state['conversation'])
-                    state['history_snapshots'].append(history_snapshot)
-
-                    # Format the prompt
-                    try:
-                        formatted = self.tokenizer.apply_chat_template(
-                            history_snapshot,
-                            tokenize=False,
-                            add_generation_prompt=True
-                        )
-                    except Exception as e:
-                        self.logger.debug("Chat template failed (%s), using simple format", e)
-                        parts = []
-                        for message in history_snapshot:
-                            role = message['role'].capitalize()
-                            parts.append(f"{role}: {message['content']}")
-                        parts.append("Assistant:")
-                        formatted = "\n\n".join(parts)
-
-                    formatted_prompts.append(formatted)
-                    state['prompts'].append(prompt)
-
-                # Generate responses in batch
-                responses_data = self._generate_responses_batched(formatted_prompts, temperature)
-
-                # responses_data returns: (texts, token_logprobs, generated_ids)
-                # texts: list of strings
-                # token_logprobs: [B, seq_len] - logprobs for sampled tokens
-                # generated_ids: [B, seq_len] - token IDs
-
-                # Process each response
-                for idx, i in enumerate(active_indices):
-                    state = batch_states[i]
-
-                    # Extract data for this specific batch element
-                    response = responses_data[0][idx] if isinstance(responses_data[0], list) else responses_data[0]
-                    logprobs = responses_data[1][idx] if len(responses_data[1].shape) > 1 else responses_data[1]  # [seq_len]
-                    token_ids = responses_data[2][idx] if len(responses_data[2].shape) > 1 else responses_data[2]  # [seq_len]
-
-                    state['conversation'].append({"role": "assistant", "content": response})
-                    state['responses'].append(response)
-                    state['all_logprobs'].append(logprobs)
-                    state['all_token_ids'].append(token_ids)
-
-                    # Parse the response
-                    try:
-                        cleaned = response.split('</think>')[-1].strip()
-                        if cleaned.startswith('```'):
-                            cleaned = cleaned.split('\n', 1)[1] if '\n' in cleaned else cleaned[3:]
-                            cleaned = cleaned.rsplit('```', 1)[0] if '```' in cleaned else cleaned
-
-                        parsed = json.loads(cleaned.strip())
-                        action = parsed.get('action')
-                        reasoning = parsed.get('reasoning')
-                    except Exception:
-                        self.logger.debug("Error parsing response: %s", response, exc_info=True)
-                        action = None
-                        reasoning = None
-
-                    if action not in (0, 1):
-                        self.logger.warning("Invalid action '%s', defaulting to stand (0)", action)
-                        action = 0
-
-                    state['states'].append(state['obs']['description'])
-                    state['actions'].append(action)
-                    state['reasonings'].append(reasoning)
-
-                    # Step the environment
-                    obs, reward, done, info = state['env'].step(action)
-                    state['obs'] = obs
-                    state['rewards'].append(reward)
-                    state['done'] = done
-
-            # Create Episode objects from completed batch
-            for i in range(current_batch_size):
-                state = batch_states[i]
-                total_reward = sum(state['rewards'])
-
-                episode = Episode(
-                    states=state['states'],
-                    actions=state['actions'],
-                    prompts=state['prompts'],
-                    responses=state['responses'],
-                    rewards=state['rewards'],
-                    total_reward=total_reward,
-                    reasonings=state['reasonings'],
-                    message_histories=state['history_snapshots'],
-                    logits=state['all_logprobs'],  # Keep as list of tensors
-                    response_token_ids=state['all_token_ids']
-                )
-                episodes.append(episode)
-
-        return episodes
 
     def collect_rollouts(self, num_episodes: int, iteration: int) -> List[Episode]:
 
@@ -904,7 +755,6 @@ class RLVRTrainer:
                     'train/gradient_norm_std': np.std(gradient_norms) if gradient_norms else 0.0,
                     'train/num_training_steps': num_training_steps,
                 }
-                # Only add histogram if we have valid step losses
                 if step_losses and all(np.isfinite(loss) for loss in step_losses):
                     log_dict['train/loss_histogram'] = wandb.Histogram(step_losses)
                 wandb.log(log_dict, step=iteration)
@@ -925,7 +775,6 @@ class RLVRTrainer:
                 self._log_iteration(record)
 
                 if self.config.use_wandb:
-                    # Log all evaluation metrics
                     eval_logs = {
                         'eval/mean_reward': eval_metrics['mean_reward'],
                         'eval/std_reward': eval_metrics['std_reward'],
@@ -937,7 +786,6 @@ class RLVRTrainer:
                     }
                     wandb.log(eval_logs, step=iteration)
 
-            # Save checkpoint
             if iteration % 5 == 0 or iteration == self.config.num_iterations:
                 checkpoint_name = f"iteration_{iteration}"
                 save_path = self._save_checkpoint(checkpoint_name)
