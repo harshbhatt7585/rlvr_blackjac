@@ -838,13 +838,7 @@ class RLVRTrainer:
                     # Forward pass with gradients on the full sequence
                     outputs = self.model(input_ids=full_input_ids)
 
-                    # Get the actual token sequence (flatten if needed)
-                    if len(response_token_ids.shape) == 2:
-                        response_tokens_flat = response_token_ids[0]  # [seq_len]
-                    else:
-                        response_tokens_flat = response_token_ids
-
-                    seq_len = response_tokens_flat.shape[0]
+                    seq_len = response_token_ids.shape[0]
 
                     # Get logits for the response part (shift by 1 for next token prediction)
                     response_logits = outputs.logits[0, prompt_length-1:prompt_length-1+seq_len, :]
@@ -853,7 +847,7 @@ class RLVRTrainer:
                     log_probs = F.log_softmax(response_logits, dim=-1)
 
                     # Extract log probabilities for the actual tokens that were generated
-                    selected_log_probs = log_probs[range(seq_len), response_tokens_flat]
+                    selected_log_probs = log_probs[range(seq_len), response_token_ids]
 
                     # Get old log probabilities for this step (detached)
                     old_step_logprobs = episode.logits[step_idx]
@@ -873,7 +867,7 @@ class RLVRTrainer:
                         old_selected_log_probs = old_step_logprobs
                     else:
                         # Case 2: Full distribution, need to extract for specific tokens
-                        old_selected_log_probs = old_step_logprobs[range(seq_len), response_tokens_flat]
+                        old_selected_log_probs = old_step_logprobs[range(seq_len), response_token_ids]
 
                     # Average over tokens
                     new_logprob_mean = selected_log_probs.mean()
