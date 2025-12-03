@@ -102,6 +102,7 @@ class RLVRConfig:
     # Batched generation settings
     use_batched_generation: bool = True  # Use batched generation for faster rollouts
     generation_batch_size: int = 8  # Number of episodes to generate in parallel
+    replay_buffer_capacity: int = 1000
 
 
 @dataclass
