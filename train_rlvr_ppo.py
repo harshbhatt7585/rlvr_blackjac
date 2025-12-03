@@ -63,12 +63,9 @@ class RLVRConfig:
     episodes_per_iteration: int = 100
     batch_size: int = 8
     learning_rate: float = 2e-5
-    num_epochs_per_iteration: int = 1
 
     # RLVR settings
     temperature: float = 0.7
-    reward_threshold: float = 0.0  # Only train on episodes with reward >= this
-    advantage_weighting: bool = True  # Weight examples by advantage
     ppo_clip_ratio: float = 0.2  # PPO clipping parameter
 
     # LoRA settings
