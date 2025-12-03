@@ -146,8 +146,6 @@ class ReplayBuffer:
 
 
 class RLVRTrainer:
-    """RLVR trainer for Blackjack."""
-
     def __init__(self, config: RLVRConfig):
         self.config = config
         if not logging.getLogger().handlers:
@@ -306,7 +304,6 @@ class RLVRTrainer:
         formatted_prompts: List[str],
         temperature: float
     ) -> List[tuple]:
-        """Generate responses for multiple prompts sequentially (not truly batched due to padding issues)."""
 
         results_texts = []
         results_logprobs = []
@@ -511,7 +508,6 @@ class RLVRTrainer:
         temperature: float = 0.7,
         batch_size: Optional[int] = None
     ) -> List[Episode]:
-        """Collect multiple episodes in parallel using batched generation."""
 
         if batch_size is None:
             batch_size = min(num_episodes, 8)  # Default batch size
@@ -658,7 +654,6 @@ class RLVRTrainer:
         return episodes
 
     def collect_rollouts(self, num_episodes: int, iteration: int) -> List[Episode]:
-        """Collect episodes sequentially to ensure correct trajectories."""
 
         episodes = []
         self.logger.info("Collecting %d episodes sequentially", num_episodes)
@@ -756,7 +751,6 @@ class RLVRTrainer:
         return metrics
 
     def ppo_train(self):
-        import random
 
         for iteration in range(1, self.config.num_iterations + 1):
             self.logger.info("Starting iteration %d/%d", iteration, self.config.num_iterations)
@@ -883,21 +877,18 @@ class RLVRTrainer:
 
                     batch_losses.append(ppo_loss)
 
-            if batch_losses:
-                total_loss = torch.stack(batch_losses).mean()
-                num_training_steps = len(batch_losses)
+            total_loss = torch.stack(batch_losses).mean()
+            num_training_steps = len(batch_losses)
 
-                self.optimizer.zero_grad()
-                total_loss.backward()
+            self.optimizer.zero_grad()
+            total_loss.backward()
 
-                # Compute gradient norm
-                grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                gradient_norms.append(grad_norm.item())
+            # Compute gradient norm
+            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            gradient_norms.append(grad_norm.item())
 
-                self.optimizer.step()
-                step_losses.append(total_loss.item())
-            else:
-                total_loss = torch.tensor(0.0)
+            self.optimizer.step()
+            step_losses.append(total_loss.item())
 
             avg_loss = total_loss.item() if isinstance(total_loss, torch.Tensor) else float(total_loss)
             avg_grad_norm = np.mean(gradient_norms) if gradient_norms else 0.0
