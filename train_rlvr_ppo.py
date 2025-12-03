@@ -852,22 +852,13 @@ class RLVRTrainer:
                     # Get old log probabilities for this step (detached)
                     old_step_logprobs = episode.logits[step_idx]
 
-                    if old_step_logprobs is None:
-                        # Skip if we don't have old logprobs (e.g., from streaming)
-                        continue
-
                     old_step_logprobs = old_step_logprobs.detach().to(self.model.device)
 
                     # The old logprobs might be:
                     # 1. [seq_len] - just the logprobs for sampled tokens (from your custom generation)
                     # 2. [seq_len, vocab_size] - full distribution
 
-                    if len(old_step_logprobs.shape) == 1:
-                        # Case 1: Already extracted logprobs for sampled tokens
-                        old_selected_log_probs = old_step_logprobs
-                    else:
-                        # Case 2: Full distribution, need to extract for specific tokens
-                        old_selected_log_probs = old_step_logprobs[range(seq_len), response_token_ids]
+                    old_selected_log_probs = old_step_logprobs
 
                     # Average over tokens
                     new_logprob_mean = selected_log_probs.mean()
