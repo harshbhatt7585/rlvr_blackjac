@@ -801,7 +801,6 @@ class RLVRTrainer:
             gradient_norms = []
             num_training_steps = 0
 
-            # sample batch (use all available episodes if buffer is smaller than batch_size)
             actual_batch_size = min(self.config.batch_size, len(self.replay_buffer))
             if actual_batch_size == 0:
                 self.logger.warning("Replay buffer is empty, skipping training")
@@ -815,31 +814,17 @@ class RLVRTrainer:
             batch_losses = []
 
             for ep_idx, episode in enumerate(batch_episodes):
-                # Compute advantage for this episode (reward - baseline)
                 advantage = episode.total_reward - mean_reward
 
                 # Recompute logprobs for this trajectory with current policy (with gradients)
                 for step_idx, history in enumerate(episode.message_histories):
-                    # Get the stored token IDs from collection
                     response_token_ids = episode.response_token_ids[step_idx]
 
-                    if len(response_token_ids) == 0:
-                        continue  # Skip if no response tokens
-
-                    # Format the prompt
-                    try:
-                        formatted = self.tokenizer.apply_chat_template(
-                            history,
-                            tokenize=False,
-                            add_generation_prompt=True
-                        )
-                    except Exception as e:
-                        parts = []
-                        for message in history:
-                            role = message['role'].capitalize()
-                            parts.append(f"{role}: {message['content']}")
-                        parts.append("Assistant:")
-                        formatted = "\n\n".join(parts)
+                    formatted = self.tokenizer.apply_chat_template(
+                        history,
+                        tokenize=False,
+                        add_generation_prompt=True
+                    )
 
                     # Tokenize prompt
                     inputs = self.tokenizer(formatted, return_tensors="pt").to(self.model.device)
