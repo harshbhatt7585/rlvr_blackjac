@@ -359,18 +359,13 @@ class RLVRTrainer:
         batch_size = len(formatted_prompts)
         max_len = max(len(tids) for tids in results_token_ids) if results_token_ids else 0
 
-        if max_len == 0:
-            # No tokens generated
-            batch_token_ids = torch.zeros((batch_size, 1), dtype=torch.long, device=self.model.device)
-            batch_logprobs = torch.zeros((batch_size, 1), dtype=torch.float, device=self.model.device)
-        else:
-            batch_token_ids = torch.zeros((batch_size, max_len), dtype=torch.long, device=self.model.device)
-            batch_logprobs = torch.zeros((batch_size, max_len), dtype=torch.float, device=self.model.device)
+        batch_token_ids = torch.zeros((batch_size, max_len), dtype=torch.long, device=self.model.device)
+        batch_logprobs = torch.zeros((batch_size, max_len), dtype=torch.float, device=self.model.device)
 
-            for i in range(batch_size):
-                seq_len = len(results_token_ids[i])
-                batch_token_ids[i, :seq_len] = results_token_ids[i]
-                batch_logprobs[i, :seq_len] = results_logprobs[i]
+        for i in range(batch_size):
+            seq_len = len(results_token_ids[i])
+            batch_token_ids[i, :seq_len] = results_token_ids[i]
+            batch_logprobs[i, :seq_len] = results_logprobs[i]
 
         return results_texts, batch_logprobs, batch_token_ids
 
