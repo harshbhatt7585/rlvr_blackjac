@@ -572,6 +572,7 @@ class RLVRTrainer:
                 for idx, i in enumerate(active_indices):
                     state = batch_states[i]
                     response, logprobs = responses_and_logprobs[idx]
+                    logprobs = logprobs.squeeze(1).mean(dim=1)
 
                     state['conversation'].append({"role": "assistant", "content": response})
                     state['responses'].append(response)
@@ -620,7 +621,7 @@ class RLVRTrainer:
                     total_reward=total_reward,
                     reasonings=state['reasonings'],
                     message_histories=state['history_snapshots'],
-                    logits=torch.stack(state['all_logprobs'])
+                    logits=torch.stack(state['all_logprobs']).squeeze(0)
                 )
                 episodes.append(episode)
 
@@ -786,7 +787,9 @@ class RLVRTrainer:
             num_training_steps = 0
 
             # sample batch
-            batch_episodes = random.sample(episodes, self.config.batch_size)
+            batch_episodes = self.replay_buffer.sample(self.config.batch_size)
+
+            print("batch_episodes shape: ", len(batch_episodes))
 
             # compute advantage
             advantage = mean_reward 
@@ -801,7 +804,7 @@ class RLVRTrainer:
             print(new_logprobs.shape)
 
             # compute ratio
-            ratio = new_logprobs / old_logprobs
+            ratio = new_logprobs.mean(dim=1) / old_logprobs.mean(dim=1)
             clip_ratio = torch.clamp(ratio, 1 - self.config.ppo_clip_ratio, 1 + self.config.ppo_clip_ratio)
 
             # compute ppo loss
