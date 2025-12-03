@@ -831,14 +831,7 @@ class RLVRTrainer:
                     prompt_length = inputs['input_ids'].shape[1]
 
                     # Create full input (prompt + response tokens)
-                    # Ensure response_token_ids is 2D: [1, seq_len]
-                    if isinstance(response_token_ids, list):
-                        response_token_ids = torch.tensor([response_token_ids], device=self.model.device)
-                    elif len(response_token_ids.shape) == 1:
-                        response_token_ids = response_token_ids.unsqueeze(0)
-                    elif response_token_ids.shape[0] > 1:
-                        # If batched, take only the first one (shouldn't happen in training)
-                        response_token_ids = response_token_ids[0:1]
+                    response_token_ids = torch.tensor([response_token_ids], device=self.model.device)
 
                     full_input_ids = torch.cat([inputs['input_ids'], response_token_ids], dim=1)
 
