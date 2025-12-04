@@ -317,21 +317,11 @@ class RLVRTrainer:
             history_snapshot = copy.deepcopy(conversation)
             history_snapshots.append(history_snapshot)
 
-            try:
-                formatted = self.tokenizer.apply_chat_template(
-                    history_snapshot,
-                    tokenize=False,
-                    add_generation_prompt=True
-                )
-            except Exception as e:
-                self.logger.debug("Chat template failed (%s), using simple format", e)
-                parts = []
-                for message in history_snapshot:
-                    role = message['role'].capitalize()
-                    parts.append(f"{role}: {message['content']}")
-                parts.append("Assistant:")
-                formatted = "\n\n".join(parts)
-
+            formatted = self.tokenizer.apply_chat_template(
+                history_snapshot,
+                tokenize=False,
+                add_generation_prompt=True
+            )
             inputs = self.tokenizer(formatted, return_tensors="pt").to(self.model.device)
 
             state_value = self._estimate_state_value(inputs)
@@ -579,30 +569,23 @@ class RLVRTrainer:
 
                     old_selected_log_probs = old_step_logprobs.detach().to(self.model.device, dtype=torch.float32)
 
-                    new_logprob_mean = selected_log_probs.mean()
-                    old_logprob_mean = old_selected_log_probs.mean()
-
-                    ratio = torch.exp(new_logprob_mean - old_logprob_mean)
-
-                    if torch.isnan(ratio) or torch.isinf(ratio):
-                        self.logger.warning(
-                            "Invalid ratio detected (nan/inf), skipping step. new_logprob: %.4f, old_logprob: %.4f",
-                            new_logprob_mean.item(),
-                            old_logprob_mean.item()
-                        )
-                        continue
-
-                    clip_ratio = torch.clamp(ratio, 1 - self.config.ppo_clip_ratio, 1 + self.config.ppo_clip_ratio)
+                    # Per-token PPO computation (fixed)
+                    logprob_diff = selected_log_probs - old_selected_log_probs
+                    ratios = torch.exp(logprob_diff)
+                    print("ratio: ", ratios.mean().item())  # For debugging; average ratio over tokens
 
                     step_return = returns[step_idx]
                     old_value = episode.value_estimates[step_idx]
                     advantage = step_return - old_value
-
                     advantage_tensor = torch.tensor(advantage, dtype=torch.float32, device=self.model.device)
 
-                    policy_loss = -torch.min(ratio * advantage_tensor, clip_ratio * advantage_tensor)
+                    surrog1 = ratios * advantage_tensor
+                    surrog2 = torch.clamp(ratios, 1 - self.config.ppo_clip_ratio, 1 + self.config.ppo_clip_ratio) * advantage_tensor
+                    policy_losses = -torch.min(surrog1, surrog2)
+                    policy_loss = policy_losses.mean()  # Mean over tokens
                     batch_policy_losses.append(policy_loss)
 
+                    # Value loss (keep this)
                     hidden_states = outputs.hidden_states[-1]
                     prompt_hidden = hidden_states[0, prompt_length - 1, :].to(torch.float32)
                     value_pred = self.value_head(prompt_hidden)
@@ -615,6 +598,8 @@ class RLVRTrainer:
                 continue
 
             policy_loss = torch.stack(batch_policy_losses).mean()
+            print("policy_loss: ", policy_loss.item())  # For debugging
+
             value_loss = torch.stack(batch_value_losses).mean() if batch_value_losses else torch.tensor(0.0, device=self.model.device)
             total_loss = policy_loss + self.config.value_loss_coef * value_loss
             num_training_steps = len(batch_policy_losses)
@@ -625,6 +610,7 @@ class RLVRTrainer:
             torch.nn.utils.clip_grad_norm_(self.trainable_parameters, max_norm=1.0)
 
             self.optimizer.step()
+
 
             avg_total_loss = total_loss.detach().item()
             avg_policy_loss = policy_loss.detach().item()
@@ -666,7 +652,7 @@ def main():
     config = RLVRConfig(
         model_name="meta-llama/Llama-3.2-1B-Instruct",
         num_iterations=10,
-        episodes_per_iteration=100,
+        episodes_per_iteration=5,
         batch_size=8,
         learning_rate=2e-5,
         temperature=0.7,
@@ -680,7 +666,7 @@ def main():
         output_dir="./checkpoints",
         log_file="./training_log.json",
         eval_frequency=1,
-        eval_episodes=100,
+        eval_episodes=5,
         verbose=False,
         stream_rollouts=False,
         replay_buffer_capacity=1000
