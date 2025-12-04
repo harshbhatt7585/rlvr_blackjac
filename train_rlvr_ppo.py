@@ -463,8 +463,6 @@ class RLVRTrainer:
 
             mean_reward = sum([ep.total_reward for ep in episodes]) / len(episodes)
             std_reward = np.std([ep.total_reward for ep in episodes])
-            min_reward = min([ep.total_reward for ep in episodes])
-            max_reward = max([ep.total_reward for ep in episodes])
             win_rate = np.mean([ep.total_reward > 0 for ep in episodes])
             lose_rate = np.mean([ep.total_reward < 0 for ep in episodes])
             draw_rate = np.mean([ep.total_reward == 0 for ep in episodes])
