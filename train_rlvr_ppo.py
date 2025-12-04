@@ -572,7 +572,6 @@ class RLVRTrainer:
                     # Per-token PPO computation (fixed)
                     logprob_diff = selected_log_probs - old_selected_log_probs
                     ratios = torch.exp(logprob_diff)
-                    print("ratio: ", ratios.mean().item())  # For debugging; average ratio over tokens
 
                     step_return = returns[step_idx]
                     old_value = episode.value_estimates[step_idx]
@@ -601,6 +600,7 @@ class RLVRTrainer:
             print("policy_loss: ", policy_loss.item())  # For debugging
 
             value_loss = torch.stack(batch_value_losses).mean() if batch_value_losses else torch.tensor(0.0, device=self.model.device)
+            print("value_loss: ", value_loss.item())
             total_loss = policy_loss + self.config.value_loss_coef * value_loss
             num_training_steps = len(batch_policy_losses)
 
