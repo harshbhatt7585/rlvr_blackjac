@@ -6,6 +6,7 @@ import random
 from threading import Thread
 
 import torch
+import torch.nn as nn
 import numpy as np
 from typing import List, Dict, Optional
 from dataclasses import dataclass
@@ -58,6 +59,8 @@ class RLVRConfig:
     verbose: bool = False
     stream_rollouts: bool = False
     replay_buffer_capacity: int = 1000
+    discount_factor: float = 1.0
+    value_loss_coef: float = 0.5
 
 
 @dataclass
@@ -72,6 +75,7 @@ class Episode:
     message_histories: List[List[Dict[str, str]]]
     logits: List
     response_token_ids: List[List[int]]
+    value_estimates: List[float]
 
 
 class ReplayBuffer:
@@ -155,7 +159,12 @@ class RLVRTrainer:
             self.model = get_peft_model(self.model, lora_config)
             self.model.print_trainable_parameters()
 
-        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=config.learning_rate)
+        self.device = next(self.model.parameters()).device
+
+        self.value_head = nn.Linear(self.model.config.hidden_size, 1).to(self.device)
+
+        self.trainable_parameters = list(self.model.parameters()) + list(self.value_head.parameters())
+        self.optimizer = torch.optim.AdamW(self.trainable_parameters, lr=config.learning_rate)
         self.history = []
         os.makedirs(config.output_dir, exist_ok=True)
         self.replay_buffer = ReplayBuffer(capacity=config.replay_buffer_capacity)
@@ -227,6 +236,27 @@ class RLVRTrainer:
 
         return decoded_text, logprobs, generated_tokens
 
+    def _estimate_state_value(self, inputs: Dict[str, torch.Tensor]) -> float:
+        with torch.no_grad():
+            outputs = self.model(
+                **inputs,
+                output_hidden_states=True,
+                return_dict=True
+            )
+            hidden_states = outputs.hidden_states[-1]
+            last_hidden = hidden_states[:, -1, :]
+            value = self.value_head(last_hidden.to(torch.float32)).squeeze(-1)
+        return value.item()
+
+    def _compute_returns(self, rewards: List[float]) -> List[float]:
+        returns: List[float] = []
+        running_return = 0.0
+        gamma = self.config.discount_factor
+        for reward in reversed(rewards):
+            running_return = reward + gamma * running_return
+            returns.insert(0, running_return)
+        return returns
+
     def collect_episode(
         self,
         temperature: float = 0.7,
@@ -238,6 +268,11 @@ class RLVRTrainer:
     ) -> Episode:
         obs = self.env.reset()
 
+        was_training_model = self.model.training
+        was_training_value_head = self.value_head.training
+        self.model.eval()
+        self.value_head.eval()
+
         states: List[str] = []
         actions: List[int] = []
         prompts: List[str] = []
@@ -247,6 +282,7 @@ class RLVRTrainer:
         history_snapshots: List[List[Dict[str, str]]] = []
         all_logprobs: List = []
         all_token_ids: List[List[int]] = []
+        value_estimates: List[float] = []
 
         conversation: List[Dict[str, str]] = [
             {"role": "system", "content": "You are a clever Blackjack player."}
@@ -297,6 +333,9 @@ class RLVRTrainer:
                 formatted = "\n\n".join(parts)
 
             inputs = self.tokenizer(formatted, return_tensors="pt").to(self.model.device)
+
+            state_value = self._estimate_state_value(inputs)
+            value_estimates.append(state_value)
 
             response, logprobs, token_ids = self._generate_response(
                 inputs,
@@ -349,6 +388,11 @@ class RLVRTrainer:
             print(f"\nEpisode complete | Total reward: {total_reward:.2f}")
             print("-" * 60)
 
+        if was_training_model:
+            self.model.train()
+        if was_training_value_head:
+            self.value_head.train()
+
         return Episode(
             states=states,
             actions=actions,
@@ -359,7 +403,8 @@ class RLVRTrainer:
             reasonings=reasonings,
             message_histories=history_snapshots,
             logits=all_logprobs,
-            response_token_ids=all_token_ids
+            response_token_ids=all_token_ids,
+            value_estimates=value_estimates
         )
 
     def collect_rollouts(self, num_episodes: int, iteration: int) -> List[Episode]:
@@ -405,6 +450,7 @@ class RLVRTrainer:
         else:
             self.model.save_pretrained(save_dir)
 
+        torch.save(self.value_head.state_dict(), os.path.join(save_dir, "value_head.pt"))
         self.tokenizer.save_pretrained(save_dir)
         return save_dir
 
@@ -481,13 +527,19 @@ class RLVRTrainer:
 
             batch_episodes = self.replay_buffer.sample(actual_batch_size)
 
-            batch_losses = []
+            batch_policy_losses = []
+            batch_value_losses = []
+
+            self.model.train()
+            self.value_head.train()
 
             for ep_idx, episode in enumerate(batch_episodes):
-                advantage = episode.total_reward - mean_reward
+                returns = self._compute_returns(episode.rewards)
 
                 for step_idx, history in enumerate(episode.message_histories):
                     response_token_ids = episode.response_token_ids[step_idx]
+                    if not response_token_ids:
+                        continue
 
                     formatted = self.tokenizer.apply_chat_template(
                         history,
@@ -498,25 +550,34 @@ class RLVRTrainer:
                     inputs = self.tokenizer(formatted, return_tensors="pt").to(self.model.device)
                     prompt_length = inputs['input_ids'].shape[1]
 
-                    response_token_ids = torch.tensor([response_token_ids], device=self.model.device)
+                    response_token_tensor = torch.tensor(
+                        response_token_ids,
+                        dtype=torch.long,
+                        device=self.model.device
+                    ).unsqueeze(0)
 
-                    full_input_ids = torch.cat([inputs['input_ids'], response_token_ids], dim=1)
+                    full_input_ids = torch.cat([inputs['input_ids'], response_token_tensor], dim=1)
 
-                    outputs = self.model(input_ids=full_input_ids)
+                    outputs = self.model(
+                        input_ids=full_input_ids,
+                        output_hidden_states=True,
+                        return_dict=True
+                    )
 
-                    seq_len = response_token_ids.shape[0]
+                    seq_len = response_token_tensor.shape[1]
 
-                    response_logits = outputs.logits[0, prompt_length-1:prompt_length-1+seq_len, :]
+                    response_logits = outputs.logits[0, prompt_length - 1:prompt_length - 1 + seq_len, :]
 
-                    log_probs = F.log_softmax(response_logits, dim=-1)
+                    log_probs = F.log_softmax(response_logits, dim=-1).to(torch.float32)
 
-                    selected_log_probs = log_probs[range(seq_len), response_token_ids]
+                    response_tokens_flat = response_token_tensor.squeeze(0)
+                    selected_log_probs = log_probs[range(seq_len), response_tokens_flat]
 
                     old_step_logprobs = episode.logits[step_idx]
+                    if old_step_logprobs is None or len(old_step_logprobs) != seq_len:
+                        continue
 
-                    old_step_logprobs = old_step_logprobs.detach().to(self.model.device)
-
-                    old_selected_log_probs = old_step_logprobs
+                    old_selected_log_probs = old_step_logprobs.detach().to(self.model.device, dtype=torch.float32)
 
                     new_logprob_mean = selected_log_probs.mean()
                     old_logprob_mean = old_selected_log_probs.mean()
@@ -524,30 +585,59 @@ class RLVRTrainer:
                     ratio = torch.exp(new_logprob_mean - old_logprob_mean)
 
                     if torch.isnan(ratio) or torch.isinf(ratio):
-                        self.logger.warning(f"Invalid ratio detected (nan/inf), skipping step. new_logprob: {new_logprob_mean.item():.4f}, old_logprob: {old_logprob_mean.item():.4f}")
+                        self.logger.warning(
+                            "Invalid ratio detected (nan/inf), skipping step. new_logprob: %.4f, old_logprob: %.4f",
+                            new_logprob_mean.item(),
+                            old_logprob_mean.item()
+                        )
                         continue
 
                     clip_ratio = torch.clamp(ratio, 1 - self.config.ppo_clip_ratio, 1 + self.config.ppo_clip_ratio)
 
+                    step_return = returns[step_idx]
+                    old_value = episode.value_estimates[step_idx]
+                    advantage = step_return - old_value
+
                     advantage_tensor = torch.tensor(advantage, dtype=torch.float32, device=self.model.device)
 
-                    ppo_loss = -torch.min(ratio * advantage_tensor, clip_ratio * advantage_tensor)
+                    policy_loss = -torch.min(ratio * advantage_tensor, clip_ratio * advantage_tensor)
+                    batch_policy_losses.append(policy_loss)
 
-                    batch_losses.append(ppo_loss)
+                    hidden_states = outputs.hidden_states[-1]
+                    prompt_hidden = hidden_states[0, prompt_length - 1, :].to(torch.float32)
+                    value_pred = self.value_head(prompt_hidden)
+                    return_tensor = torch.tensor(step_return, dtype=torch.float32, device=self.model.device)
+                    value_loss = F.mse_loss(value_pred, return_tensor)
+                    batch_value_losses.append(value_loss)
 
-            total_loss = torch.stack(batch_losses).mean()
-            num_training_steps = len(batch_losses)
+            if not batch_policy_losses:
+                self.logger.warning("No valid policy updates in this batch, skipping optimizer step")
+                continue
+
+            policy_loss = torch.stack(batch_policy_losses).mean()
+            value_loss = torch.stack(batch_value_losses).mean() if batch_value_losses else torch.tensor(0.0, device=self.model.device)
+            total_loss = policy_loss + self.config.value_loss_coef * value_loss
+            num_training_steps = len(batch_policy_losses)
 
             self.optimizer.zero_grad()
             total_loss.backward()
 
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(self.trainable_parameters, max_norm=1.0)
 
             self.optimizer.step()
-            step_losses.append(total_loss.item())
 
-            avg_loss = total_loss.item() if isinstance(total_loss, torch.Tensor) else float(total_loss)
-            self.logger.info("Iteration %d complete. Avg loss: %.4f", iteration, avg_loss)
+            avg_total_loss = total_loss.detach().item()
+            avg_policy_loss = policy_loss.detach().item()
+            avg_value_loss = value_loss.detach().item() if batch_value_losses else 0.0
+            step_losses.append(avg_total_loss)
+
+            self.logger.info(
+                "Iteration %d complete. Total loss: %.4f | Policy: %.4f | Value: %.4f",
+                iteration,
+                avg_total_loss,
+                avg_policy_loss,
+                avg_value_loss
+            )
 
             if self.config.eval_frequency > 0 and iteration % self.config.eval_frequency == 0 and self.config.eval_episodes > 0:
                 eval_metrics = self.evaluate(self.config.eval_episodes, iteration=iteration)
@@ -555,7 +645,9 @@ class RLVRTrainer:
                 record = {
                     'iteration': iteration,
                     'episodes': len(episodes),
-                    'train/loss': avg_loss,
+                    'train/loss': avg_total_loss,
+                    'train/policy_loss': avg_policy_loss,
+                    'train/value_loss': avg_value_loss,
                     'reward/mean': mean_reward,
                     'eval/mean_reward': eval_metrics['mean_reward'],
                     'eval/win_rate': eval_metrics['win_rate']
