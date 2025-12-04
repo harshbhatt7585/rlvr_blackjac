@@ -572,7 +572,6 @@ class RLVRTrainer:
                         input_ids=full_input_ids,
                         output_hidden_states=True,
                         return_dict=True,
-                        temperature=self.config.temperature
                     )
 
                     seq_len = response_token_tensor.shape[1]
