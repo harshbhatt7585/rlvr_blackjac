@@ -557,7 +557,7 @@ class RLVRTrainer:
                         add_generation_prompt=True
                     )
 
-                    inputs = self.tokenizer(formatted, return_tensors="pt").to(self.model.device)
+                    inputs = self.tokenizer(formatted, return_attention_mask=True, return_tensors="pt").to(self.model.device)
                     prompt_length = inputs['input_ids'].shape[1]
 
                     response_token_tensor = torch.tensor(
@@ -572,6 +572,7 @@ class RLVRTrainer:
                         input_ids=full_input_ids,
                         output_hidden_states=True,
                         return_dict=True,
+                        attention_mask=inputs['attention_mask'],
                     )
 
                     seq_len = response_token_tensor.shape[1]
