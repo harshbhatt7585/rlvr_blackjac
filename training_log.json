@@ -35,3 +35,5 @@
 {"iteration": 8, "episodes": 5, "train/loss": 1.9560575485229492, "train/policy_loss": 1.49280846118927, "train/value_loss": 0.9264981746673584, "reward/mean": 0.2, "eval/mean_reward": -1.0, "eval/win_rate": 0.0}
 {"iteration": 9, "episodes": 5, "train/loss": 1.0845463275909424, "train/policy_loss": 0.5519399046897888, "train/value_loss": 1.0652129650115967, "reward/mean": 0.2, "eval/mean_reward": 0.2, "eval/win_rate": 0.6}
 {"iteration": 10, "episodes": 5, "train/loss": 1.7395093441009521, "train/policy_loss": 1.0198365449905396, "train/value_loss": 1.4393455982208252, "reward/mean": -0.2, "eval/mean_reward": -0.2, "eval/win_rate": 0.4}
+{"iteration": 1, "episodes": 10, "train/loss": 5.226456165313721, "train/policy_loss": 3.1422877311706543, "train/value_loss": 4.168336868286133, "reward/mean": -0.2, "eval/mean_reward": -0.4, "eval/win_rate": 0.3}
+{"iteration": 1, "episodes": 10, "train/loss": 3.8859872817993164, "train/policy_loss": 1.8018187284469604, "train/value_loss": 4.168336868286133, "reward/mean": -0.2, "eval/mean_reward": -0.6, "eval/win_rate": 0.2}

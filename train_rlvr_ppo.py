@@ -59,6 +59,7 @@ class RLVRConfig:
     replay_buffer_capacity: int = 1000
     discount_factor: float = 1.0
     value_loss_coef: float = 0.5
+    gae_lambda: float = 0.95
 
 
 @dataclass
@@ -489,6 +490,26 @@ class RLVRTrainer:
 
         return metrics
 
+    def compute_gae(self, rewards: List[float], value_estimates: List[float], next_value: float) -> List[float]:
+        advantages = []
+        gae = 0.0
+        gamma = self.config.discount_factor
+        lambda_ = self.config.gae_lambda
+
+        for t in reversed(range(len(rewards))):
+            if t == len(rewards) - 1:
+                next_value = next_value
+            else:
+                next_value = value_estimates[t + 1]
+            
+            delta = rewards[t] + gamma * next_value - value_estimates[t]
+            gae = delta + gamma * lambda_ * gae
+            advantages.insert(0, gae)
+        
+        returns = [adv + value for adv, value in zip(advantages, value_estimates)]
+        
+        return advantages, returns
+
     def ppo_train(self):
         for iteration in range(1, self.config.num_iterations + 1):
             self.logger.info("Starting iteration %d/%d", iteration, self.config.num_iterations)
@@ -523,7 +544,7 @@ class RLVRTrainer:
             self.value_head.train()
 
             for ep_idx, episode in enumerate(batch_episodes):
-                returns = self._compute_returns(episode.rewards)
+                advantages, returns = self.compute_gae(episode.rewards, episode.value_estimates, 0.0)
 
                 for step_idx, history in enumerate(episode.message_histories):
                     response_token_ids = episode.response_token_ids[step_idx]
@@ -572,11 +593,11 @@ class RLVRTrainer:
 
                     # Per-token PPO computation (fixed)
                     logprob_diff = selected_log_probs - old_selected_log_probs
+                    # print("logprob_diff: ", logprob_diff)
                     ratios = torch.exp(logprob_diff)
 
-                    step_return = returns[step_idx]
                     old_value = episode.value_estimates[step_idx]
-                    advantage = step_return - old_value
+                    advantage = advantages[step_idx]
                     advantage_tensor = torch.tensor(advantage, dtype=torch.float32, device=self.model.device)
 
                     surrog1 = ratios * advantage_tensor
@@ -589,7 +610,7 @@ class RLVRTrainer:
                     hidden_states = outputs.hidden_states[-1]
                     prompt_hidden = hidden_states[0, prompt_length - 1, :].to(torch.float32)
                     value_pred = self.value_head(prompt_hidden)
-                    return_tensor = torch.tensor(step_return, dtype=torch.float32, device=self.model.device)
+                    return_tensor = torch.tensor(returns[step_idx], dtype=torch.float32, device=self.model.device)
                     value_loss = F.mse_loss(value_pred, return_tensor)
                     batch_value_losses.append(value_loss)
 
