@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from typing import List, Dict, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from tqdm import tqdm
 
 from transformers import (
@@ -59,6 +59,9 @@ class RLVRConfig:
     replay_buffer_capacity: int = 1000
     discount_factor: float = 1.0
     value_loss_coef: float = 0.5
+    use_wandb: bool = True
+    wandb_project: Optional[str] = None
+    wandb_run_name: Optional[str] = None
     gae_lambda: float = 0.95
 
 
@@ -167,6 +170,24 @@ class RLVRTrainer:
         self.history = []
         os.makedirs(config.output_dir, exist_ok=True)
         self.replay_buffer = ReplayBuffer(capacity=config.replay_buffer_capacity)
+        self.wandb_run = None
+
+        if self.config.use_wandb:
+            try:
+                import wandb
+            except ImportError as exc:  # pragma: no cover - configuration guard
+                raise RuntimeError(
+                    "Weights & Biases logging is enabled but the 'wandb' package is not installed."
+                ) from exc
+
+            init_kwargs = {
+                "project": self.config.wandb_project or "rlvr_blackjack",
+                "config": asdict(self.config),
+            }
+            if self.config.wandb_run_name:
+                init_kwargs["name"] = self.config.wandb_run_name
+
+            self.wandb_run = wandb.init(**init_kwargs)
 
     def _generate_response(
         self,
@@ -257,6 +278,10 @@ class RLVRTrainer:
             returns.insert(0, running_return)
         return returns
 
+    def _wandb_log(self, data: Dict[str, float]) -> None:
+        if self.wandb_run is not None:
+            self.wandb_run.log(data)
+
     def collect_episode(
         self,
         temperature: float = 0.7,
@@ -264,7 +289,8 @@ class RLVRTrainer:
         stream: Optional[bool] = None,
         context: Optional[str] = None,
         episode_index: Optional[int] = None,
-        episode_total: Optional[int] = None
+        episode_total: Optional[int] = None,
+        log_rewards: bool = False
     ) -> Episode:
         obs = self.env.reset()
 
@@ -372,6 +398,9 @@ class RLVRTrainer:
             obs, reward, done, info = self.env.step(action)
             rewards.append(reward)
 
+            if log_rewards and self.wandb_run is not None:
+                self._wandb_log({"reward": reward})
+
         total_reward = sum(rewards)
 
         if verbose or stream_enabled:
@@ -414,7 +443,8 @@ class RLVRTrainer:
                 stream=self.config.stream_rollouts,
                 context=f"Iteration {iteration}/{self.config.num_iterations}",
                 episode_index=idx,
-                episode_total=num_episodes
+                episode_total=num_episodes,
+                log_rewards=self.wandb_run is not None
             )
             episodes.append(episode)
 
@@ -520,6 +550,9 @@ class RLVRTrainer:
             mean_reward = sum([ep.total_reward for ep in episodes]) / len(episodes)
             std_reward = np.std([ep.total_reward for ep in episodes])
             win_rate = np.mean([ep.total_reward > 0 for ep in episodes])
+            self._wandb_log({
+                "train/win_rate": win_rate,
+            })
             lose_rate = np.mean([ep.total_reward < 0 for ep in episodes])
             draw_rate = np.mean([ep.total_reward == 0 for ep in episodes])
             avg_episode_length = np.mean([len(ep.actions) for ep in episodes])
@@ -619,10 +652,8 @@ class RLVRTrainer:
                 continue
 
             policy_loss = torch.stack(batch_policy_losses).mean()
-            print("policy_loss: ", policy_loss.item())  # For debugging
 
             value_loss = torch.stack(batch_value_losses).mean() if batch_value_losses else torch.tensor(0.0, device=self.model.device)
-            print("value_loss: ", value_loss.item())
             total_loss = policy_loss + self.config.value_loss_coef * value_loss
             num_training_steps = len(batch_policy_losses)
 
@@ -647,6 +678,14 @@ class RLVRTrainer:
                 avg_value_loss
             )
 
+            self._wandb_log(
+                {
+                    "train/average_reward": mean_reward,
+                    "train/policy_loss": avg_policy_loss,
+                    "train/value_loss": avg_value_loss,
+                }
+            )
+
             if self.config.eval_frequency > 0 and iteration % self.config.eval_frequency == 0 and self.config.eval_episodes > 0:
                 eval_metrics = self.evaluate(self.config.eval_episodes, iteration=iteration)
 
@@ -667,6 +706,10 @@ class RLVRTrainer:
                 save_path = self._save_checkpoint(checkpoint_name)
                 self.logger.info("Saved checkpoint to %s", save_path)
 
+        if self.wandb_run is not None:
+            self.wandb_run.finish()
+            self.wandb_run = None
+
 
 def main():
     configure_logging(verbose=False)
@@ -674,7 +717,7 @@ def main():
     config = RLVRConfig(
         model_name="meta-llama/Llama-3.2-1B-Instruct",
         num_iterations=10,
-        episodes_per_iteration=10,
+        episodes_per_iteration=30,
         batch_size=8,
         learning_rate=2e-5,
         temperature=0.7,
@@ -688,7 +731,7 @@ def main():
         output_dir="./checkpoints",
         log_file="./training_log.json",
         eval_frequency=1,
-        eval_episodes=10,
+        eval_episodes=30,
         verbose=False,
         stream_rollouts=False,
         replay_buffer_capacity=1000
