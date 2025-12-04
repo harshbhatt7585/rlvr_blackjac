@@ -26,7 +26,6 @@ from peft import (
 
 from env import BlackjackEnv
 
-
 def configure_logging(verbose: bool = False):
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
@@ -34,7 +33,6 @@ def configure_logging(verbose: bool = False):
         format="[%(asctime)s] %(levelname)s - %(message)s",
         datefmt="%H:%M:%S"
     )
-
 
 @dataclass
 class RLVRConfig:
@@ -220,7 +218,8 @@ class RLVRTrainer:
         for j, token_id in enumerate(generated_tokens):
             if j < len(outputs.scores):
                 logit = outputs.scores[j][0]
-                logprob_dist = F.log_softmax(logit, dim=-1)
+                scaled_logits = logit / temperature if temperature > 0.0 else logit
+                logprob_dist = F.log_softmax(scaled_logits, dim=-1)
                 token_logprob = logprob_dist[token_id]
                 logprobs_for_tokens.append(token_logprob)
 
@@ -551,14 +550,16 @@ class RLVRTrainer:
                     outputs = self.model(
                         input_ids=full_input_ids,
                         output_hidden_states=True,
-                        return_dict=True
+                        return_dict=True,
+                        temperature=self.config.temperature
                     )
 
                     seq_len = response_token_tensor.shape[1]
 
                     response_logits = outputs.logits[0, prompt_length - 1:prompt_length - 1 + seq_len, :]
 
-                    log_probs = F.log_softmax(response_logits, dim=-1).to(torch.float32)
+                    scaled_logits = response_logits / self.config.temperature if self.config.temperature > 0.0 else response_logits
+                    log_probs = F.log_softmax(scaled_logits, dim=-1).to(torch.float32)
 
                     response_tokens_flat = response_token_tensor.squeeze(0)
                     selected_log_probs = log_probs[range(seq_len), response_tokens_flat]
@@ -652,7 +653,7 @@ def main():
     config = RLVRConfig(
         model_name="meta-llama/Llama-3.2-1B-Instruct",
         num_iterations=10,
-        episodes_per_iteration=5,
+        episodes_per_iteration=10,
         batch_size=8,
         learning_rate=2e-5,
         temperature=0.7,
@@ -666,7 +667,7 @@ def main():
         output_dir="./checkpoints",
         log_file="./training_log.json",
         eval_frequency=1,
-        eval_episodes=5,
+        eval_episodes=10,
         verbose=False,
         stream_rollouts=False,
         replay_buffer_capacity=1000
