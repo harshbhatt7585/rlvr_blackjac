@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Blackjack Game</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #0f4c3a 0%, #1a5f4a 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .game-container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 40px;
+            max-width: 800px;
+            width: 100%;
+        }
+
+        h1 {
+            text-align: center;
+            color: #0f4c3a;
+            margin-bottom: 30px;
+            font-size: 2.5em;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .game-info {
+            display: flex;
+            justify-content: space-around;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+        }
+
+        .info-item {
+            text-align: center;
+        }
+
+        .info-label {
+            font-size: 0.9em;
+            color: #666;
+            margin-bottom: 5px;
+        }
+
+        .info-value {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #0f4c3a;
+        }
+
+        .hands-container {
+            display: flex;
+            flex-direction: column;
+            gap: 40px;
+            margin-bottom: 30px;
+        }
+
+        .hand-section {
+            background: #f8f9fa;
+            padding: 25px;
+            border-radius: 15px;
+            border: 2px solid #e0e0e0;
+        }
+
+        .hand-label {
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 15px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .cards-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .card {
+            width: 80px;
+            height: 112px;
+            background: white;
+            border: 2px solid #333;
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 8px;
+            font-weight: bold;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+            transition: transform 0.2s;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+        }
+
+        .card.hidden {
+            background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%);
+            color: white;
+            border-color: #2c3e50;
+        }
+
+        .card-value {
+            font-size: 1.2em;
+        }
+
+        .card-suit {
+            font-size: 0.9em;
+            text-align: center;
+        }
+
+        .hand-total {
+            font-size: 1.1em;
+            color: #0f4c3a;
+            font-weight: bold;
+        }
+
+        .hand-total.bust {
+            color: #dc3545;
+        }
+
+        .hand-total.blackjack {
+            color: #28a745;
+        }
+
+        .controls {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            margin-bottom: 20px;
+        }
+
+        button {
+            padding: 15px 30px;
+            font-size: 1.1em;
+            font-weight: bold;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-hit {
+            background: #28a745;
+            color: white;
+        }
+
+        .btn-hit:hover:not(:disabled) {
+            background: #218838;
+        }
+
+        .btn-stand {
+            background: #dc3545;
+            color: white;
+        }
+
+        .btn-stand:hover:not(:disabled) {
+            background: #c82333;
+        }
+
+        .btn-new-game {
+            background: #007bff;
+            color: white;
+        }
+
+        .btn-new-game:hover:not(:disabled) {
+            background: #0056b3;
+        }
+
+        .message {
+            text-align: center;
+            padding: 20px;
+            margin-top: 20px;
+            border-radius: 10px;
+            font-size: 1.2em;
+            font-weight: bold;
+            min-height: 60px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .message.info {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+
+        .message.win {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .message.lose {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .message.draw {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .stats {
+            display: flex;
+            justify-content: space-around;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 2px solid #e0e0e0;
+        }
+
+        .stat-item {
+            text-align: center;
+        }
+
+        .stat-label {
+            font-size: 0.9em;
+            color: #666;
+        }
+
+        .stat-value {
+            font-size: 1.3em;
+            font-weight: bold;
+            color: #0f4c3a;
+        }
+    </style>
+</head>
+<body>
+    <div class="game-container">
+        <h1>🃏 Blackjack 🃏</h1>
+        
+        <div class="game-info">
+            <div class="info-item">
+                <div class="info-label">Your Total</div>
+                <div class="info-value" id="playerTotal">-</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Dealer Shows</div>
+                <div class="info-value" id="dealerVisible">-</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Status</div>
+                <div class="info-value" id="gameStatus">Ready</div>
+            </div>
+        </div>
+
+        <div class="hands-container">
+            <div class="hand-section">
+                <div class="hand-label">Dealer's Hand</div>
+                <div class="cards-container" id="dealerCards"></div>
+                <div class="hand-total" id="dealerTotal"></div>
+            </div>
+
+            <div class="hand-section">
+                <div class="hand-label">Your Hand</div>
+                <div class="cards-container" id="playerCards"></div>
+                <div class="hand-total" id="playerTotalDisplay"></div>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button class="btn-hit" id="hitBtn" onclick="handleHit()">Hit</button>
+            <button class="btn-stand" id="standBtn" onclick="handleStand()">Stand</button>
+            <button class="btn-new-game" id="newGameBtn" onclick="newGame()">New Game</button>
+        </div>
+
+        <div class="message info" id="message">Click "New Game" to start playing!</div>
+
+        <div class="stats">
+            <div class="stat-item">
+                <div class="stat-label">Games Played</div>
+                <div class="stat-value" id="gamesPlayed">0</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Wins</div>
+                <div class="stat-value" id="wins">0</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Losses</div>
+                <div class="stat-value" id="losses">0</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script src="index.js"></script>
+</body>
+</html>

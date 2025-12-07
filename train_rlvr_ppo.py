@@ -26,6 +26,12 @@ from peft import (
 
 from env import BlackjackEnv
 
+# Import render server if rendering is enabled
+
+from render_server import update_game_state, enable_rendering, run_server
+from threading import Thread
+RENDER_AVAILABLE = True
+
 def configure_logging(verbose: bool = False):
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
@@ -63,6 +69,8 @@ class RLVRConfig:
     wandb_project: Optional[str] = None
     wandb_run_name: Optional[str] = None
     gae_lambda: float = 0.95
+    enable_render: bool = True
+    render_port: int = 5000
 
 
 @dataclass
@@ -117,6 +125,24 @@ class RLVRTrainer:
             natural_reward=config.natural_reward,
             seed=config.seed
         )
+        
+        # Set up rendering if enabled
+        self.render_enabled = config.enable_render and RENDER_AVAILABLE
+        if self.render_enabled:
+            self.logger.info("Rendering enabled - starting render server on port %d", config.render_port)
+            enable_rendering()
+            # Start render server in background thread
+            self.render_thread = Thread(
+                target=run_server,
+                args=('127.0.0.1', config.render_port, False),
+                daemon=True
+            )
+            self.render_thread.start()
+            # Set render callback
+            self.env.set_render_callback(update_game_state)
+        elif config.enable_render and not RENDER_AVAILABLE:
+            self.logger.warning("Rendering requested but render_server not available. Install flask-socketio to enable rendering.")
+        
         self.logger.info("Loading model: %s", config.model_name)
         self.tokenizer = AutoTokenizer.from_pretrained(
             config.model_name,
@@ -293,6 +319,10 @@ class RLVRTrainer:
         log_rewards: bool = False
     ) -> Episode:
         obs = self.env.reset()
+        
+        # Render initial state
+        if self.render_enabled:
+            self.env.render(obs, action=None, reward=None, info=None)
 
         was_training_model = self.model.training
         was_training_value_head = self.value_head.training
@@ -318,6 +348,10 @@ class RLVRTrainer:
         step = 0
 
         stream_enabled = stream if stream is not None else (self.config.stream_rollouts or verbose)
+        
+        # Render initial state
+        if self.render_enabled:
+            self.env.render(obs, action=None, reward=None, info=None)
 
         if verbose or stream_enabled:
             header_parts = []
@@ -397,6 +431,10 @@ class RLVRTrainer:
 
             obs, reward, done, info = self.env.step(action)
             rewards.append(reward)
+            
+            # Render game state after step
+            if self.render_enabled:
+                self.env.render(obs, action=action, reward=reward, info=info)
 
             if log_rewards and self.wandb_run is not None:
                 self._wandb_log({"reward": reward})
@@ -734,7 +772,8 @@ def main():
         eval_episodes=30,
         verbose=False,
         stream_rollouts=False,
-        replay_buffer_capacity=1000
+        replay_buffer_capacity=1000,
+        enable_render=True,
     )
 
     trainer = RLVRTrainer(config)

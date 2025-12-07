@@ -45,10 +45,19 @@ class BlackjackEnv:
         self.deck: List[int] = []
         self.done: bool = False
         self.usable_ace: bool = False
+        self.player_sum: int = 0
+        self.dealer_sum: int = 0
         self.total_steps: int = 0
         self.dealer_sec_card_up = False
 
         self.history: List[Dict] = []
+        
+        # Rendering support
+        self._render_callback = None
+
+    def set_render_callback(self, callback):
+        """Set a callback function to be called when rendering."""
+        self._render_callback = callback
 
     def _create_deck(self) -> List[int]:
         """Create a standard 52-card deck (values only)."""
@@ -188,6 +197,53 @@ response format:
 ```
 """
         return prompt
+
+    def render(self, obs: Optional[Dict] = None, action: Optional[int] = None, 
+               reward: Optional[float] = None, info: Optional[Dict] = None):
+        """
+        Render the current game state to the web frontend.
+        
+        Args:
+            obs: Current observation (if None, uses current state)
+            action: Last action taken (optional)
+            reward: Last reward received (optional)
+            info: Additional info dict (optional)
+        """
+        if self._render_callback is None:
+            return
+        
+        if obs is None:
+            obs = self._get_observation()
+        
+        # Calculate dealer sum if game is done, otherwise show visible card
+        if self.done:
+            dealer_sum = self.dealer_sum
+        else:
+            # Only show visible card value
+            visible_card = self.dealer_cards[0] if self.dealer_cards else None
+            if visible_card is None:
+                dealer_sum = None
+            elif visible_card == 1:
+                dealer_sum = 11  # Ace shown as 11
+            elif visible_card >= 11:
+                dealer_sum = 10
+            else:
+                dealer_sum = visible_card
+        
+        render_state = {
+            'player_cards': self.player_cards.copy(),
+            'dealer_cards': self.dealer_cards.copy(),
+            'player_sum': self.player_sum,
+            'dealer_sum': dealer_sum,
+            'dealer_visible': self.dealer_cards[0] if self.dealer_cards else None,
+            'usable_ace': self.usable_ace,
+            'done': self.done,
+            'action': action,
+            'reward': reward,
+            'info': info or {}
+        }
+        
+        self._render_callback(render_state)
 
 
 # Example usage and testing
