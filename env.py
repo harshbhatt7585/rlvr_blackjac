@@ -1,7 +1,9 @@
 import random
 from typing import Tuple, Dict, List, Optional
 import numpy as np
+import requests
 
+HOST = "http://localhost:8000"
 
 
 class BlackjackEnv:
@@ -35,6 +37,7 @@ class BlackjackEnv:
     def __init__(self, natural_reward: float = 1.5, seed: Optional[int] = None):
         self.natural_reward = natural_reward
         self.action_space_n = 2  # 0: Stand, 1: Hit
+        self.render = False
 
         # Set random seed
         if seed is not None:
@@ -64,7 +67,12 @@ class BlackjackEnv:
     def _draw_card(self) -> int:
         if not self.deck:
             self.deck = self._create_deck()
-        return self.deck.pop()
+        
+        
+
+        card = self.deck.pop()
+        requests.post(f"{HOST}/draw_card", json={"card": card})
+        return card
 
     def _calculate_hand(self, cards: List[int]) -> Tuple[int, bool]:
 
@@ -76,6 +84,8 @@ class BlackjackEnv:
             if total + 10 <= 21:
                 total += 10
                 usable_ace = True
+        
+        requests.post(f"{HOST}/calculate_hand", json={"cards": cards})
 
         return total, usable_ace
 
@@ -98,6 +108,7 @@ class BlackjackEnv:
 
         player_cards_str = ", ".join(self._card_to_string(c) for c in self.player_cards)
         dealer_card_str = self._card_to_string(dealer_visible)
+        
 
         description = (
             f"Your hand: [{player_cards_str}] (Total: {self.player_sum}"
@@ -105,7 +116,7 @@ class BlackjackEnv:
             f"Dealer's visible card: {dealer_card_str}"
         )
 
-        return {
+        obs = {
             "player_sum": self.player_sum,
             "dealer_card": dealer_visible,
             "usable_ace": self.usable_ace,
@@ -114,6 +125,10 @@ class BlackjackEnv:
             "done": self.done,
             "description": description
         }
+
+        requests.post(f"{HOST}/get_observation", json=obs)
+
+        return obs
 
     def _card_to_string(self, card: int) -> str:
         """Convert card value to string representation."""
@@ -166,26 +181,10 @@ class BlackjackEnv:
         new_state = self._get_observation()
         return new_state, reward, self.done, info
 
-    def render(self, mode: str = "human") -> Optional[str]:
-        player_cards_str = ", ".join(self._card_to_string(c) for c in self.player_cards)
-        dealer_cards_str = ", ".join(self._card_to_string(c) for c in self.dealer_cards)
 
-        output = "=" * 50 + "\n"
-        output += f"Player's hand: [{player_cards_str}] (Total: {self.player_sum})\n"
-
-        if self.done:
-            output += f"Dealer's hand: [{dealer_cards_str}] (Total: {self.dealer_sum})\n"
-        else:
-            dealer_visible = self._card_to_string(self.dealer_cards[0])
-            output += f"Dealer's hand: [{dealer_visible}, ?]\n"
-
-        output += "=" * 50
-
-        if mode == "ansi":
-            return output
-        else:
-            print(output)
-            return None
+    def render(self, state: Dict):
+        requests.post("http://localhost:8000/render", json={"state": state})
+        self.render = True
 
     def get_prompt_for_llm(self) -> str:
         obs = self._get_observation()
@@ -228,7 +227,6 @@ if __name__ == "__main__":
         total_reward = 0
 
         while not done:
-            # Simple policy: hit if under 17, stand otherwise
             action = 1 if obs['player_sum'] < 17 else 0
             action_name = "HIT" if action == 1 else "STAND"
             print(f"Action: {action_name}")
