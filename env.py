@@ -179,13 +179,16 @@ class BlackjackEnv:
                 reward = -1.0
 
         new_state = self._get_observation()
+
+        requests.post(f"{HOST}/step", json={"action": action, "reward": reward, "done": self.done, "info": info})
+
         return new_state, reward, self.done, info
 
 
     def render(self, state: Dict):
         requests.post("http://localhost:8000/render", json={"state": state})
         self.render = True
-
+        
     def get_prompt_for_llm(self) -> str:
         obs = self._get_observation()
         prompt = f"""You are playing Blackjack. Here is the current situation:
