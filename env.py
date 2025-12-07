@@ -33,7 +33,6 @@ class BlackjackEnv:
     def __init__(self, natural_reward: float = 1.5, seed: Optional[int] = None):
         self.natural_reward = natural_reward
         self.action_space_n = 2  # 0: Stand, 1: Hit
-        self.render = False
 
         # Set random seed
         if seed is not None:
@@ -168,9 +167,6 @@ class BlackjackEnv:
         new_state = self._get_observation()
 
         return new_state, reward, self.done, info
-
-    def render(self, state: Dict):
-        self.render = True
 
     def get_prompt_for_llm(self) -> str:
         obs = self._get_observation()
