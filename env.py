@@ -1,10 +1,6 @@
 import random
 from typing import Tuple, Dict, List, Optional
 import numpy as np
-import requests
-
-HOST = "http://localhost:8000"
-
 
 class BlackjackEnv:
     """
@@ -67,11 +63,7 @@ class BlackjackEnv:
     def _draw_card(self) -> int:
         if not self.deck:
             self.deck = self._create_deck()
-        
-        
-
         card = self.deck.pop()
-        requests.post(f"{HOST}/draw_card", json={"card": card})
         return card
 
     def _calculate_hand(self, cards: List[int]) -> Tuple[int, bool]:
@@ -84,8 +76,6 @@ class BlackjackEnv:
             if total + 10 <= 21:
                 total += 10
                 usable_ace = True
-        
-        requests.post(f"{HOST}/calculate_hand", json={"cards": cards})
 
         return total, usable_ace
 
@@ -108,7 +98,6 @@ class BlackjackEnv:
 
         player_cards_str = ", ".join(self._card_to_string(c) for c in self.player_cards)
         dealer_card_str = self._card_to_string(dealer_visible)
-        
 
         description = (
             f"Your hand: [{player_cards_str}] (Total: {self.player_sum}"
@@ -125,8 +114,6 @@ class BlackjackEnv:
             "done": self.done,
             "description": description
         }
-
-        requests.post(f"{HOST}/get_observation", json=obs)
 
         return obs
 
@@ -180,15 +167,11 @@ class BlackjackEnv:
 
         new_state = self._get_observation()
 
-        requests.post(f"{HOST}/step", json={"action": action, "reward": reward, "done": self.done, "info": info})
-
         return new_state, reward, self.done, info
 
-
     def render(self, state: Dict):
-        requests.post("http://localhost:8000/render", json={"state": state})
         self.render = True
-        
+
     def get_prompt_for_llm(self) -> str:
         obs = self._get_observation()
         prompt = f"""You are playing Blackjack. Here is the current situation:
@@ -223,7 +206,7 @@ if __name__ == "__main__":
         print('='*60)
 
         obs = env.reset()
-        env.render()
+        env.render(obs)
         print(f"\n{obs['description']}\n")
 
         done = False
@@ -237,7 +220,7 @@ if __name__ == "__main__":
             obs, reward, done, info = env.step(action)
             total_reward += reward
 
-            env.render()
+            env.render(obs)
 
             if done:
                 print(f"\n{info.get('explanation', '')}")
