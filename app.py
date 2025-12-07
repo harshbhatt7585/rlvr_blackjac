@@ -1,10 +1,12 @@
 from fastapi import FastAPI
 import requests
+import uvicorn
 
 BACKEND_URL = "http://localhost:8000"
 FRONTEND_URL = "http://localhost:8000/render"
 
 app = FastAPI()
+
 
 @app.post(f"{BACKEND_URL}/draw_card")
 def draw_card(card: int):
@@ -26,4 +28,8 @@ def step(action: int, reward: float, done: bool, info: Dict):
 @app.post(f"{BACKEND_URL}/render")
 def render(state: Dict):
     requests.post(f"{FRONTEND_URL}/render", json={"state": state})
-    
+
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
