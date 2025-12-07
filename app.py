@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 import requests
 import uvicorn
+from typing import List, Dict
 
 BACKEND_URL = "http://localhost:8000"
 FRONTEND_URL = "http://localhost:8000/render"
