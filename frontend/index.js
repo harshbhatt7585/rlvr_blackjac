@@ -540,20 +540,32 @@ function addStructuredLog(data) {
     logEntry.className = 'log-entry-structured';
     
     const timeStr = new Date().toLocaleTimeString();
-    const actionBadge = data.action === 'Hit' ? 'hit-badge' : 'stand-badge';
     const resultBadge = data.result ? `result-${data.resultType}` : '';
     
     let html = `
         <div class="log-header">
             <span class="log-timestamp">[${timeStr}]</span>
-            <span class="action-badge ${actionBadge}">${data.action}</span>
             ${data.result ? `<span class="result-badge ${resultBadge}">${data.result}</span>` : ''}
-            ${data.reward !== null ? `<span class="reward-badge ${data.reward > 0 ? 'reward-positive' : data.reward < 0 ? 'reward-negative' : 'reward-neutral'}">${data.reward > 0 ? '+' : ''}${data.reward.toFixed(2)}</span>` : ''}
         </div>
     `;
     
+    // Show action, reasoning, and reward together
     if (data.reasoning) {
-        html += `<div class="log-reasoning">💭 ${escapeHtml(data.reasoning)}</div>`;
+        let reasoningText = `💭 <strong>Action:</strong> ${data.action}`;
+        if (data.reward !== null) {
+            const rewardColor = data.reward > 0 ? '#28a745' : data.reward < 0 ? '#dc3545' : '#6c757d';
+            reasoningText += ` | <strong>Reward:</strong> <span style="color: ${rewardColor}">${data.reward > 0 ? '+' : ''}${data.reward.toFixed(2)}</span>`;
+        }
+        reasoningText += `<br><strong>Reasoning:</strong> ${escapeHtml(data.reasoning)}`;
+        html += `<div class="log-reasoning">${reasoningText}</div>`;
+    } else {
+        // If no reasoning, still show action and reward
+        let infoText = `<strong>Action:</strong> ${data.action}`;
+        if (data.reward !== null) {
+            const rewardColor = data.reward > 0 ? '#28a745' : data.reward < 0 ? '#dc3545' : '#6c757d';
+            infoText += ` | <strong>Reward:</strong> <span style="color: ${rewardColor}">${data.reward > 0 ? '+' : ''}${data.reward.toFixed(2)}</span>`;
+        }
+        html += `<div class="log-reasoning">${infoText}</div>`;
     }
     
     html += `<div class="log-state">Player: ${data.playerSum} | Dealer shows: ${data.dealerVisible !== undefined ? data.dealerVisible : '?'}</div>`;
