@@ -331,7 +331,7 @@ class RLVRTrainer:
         
         # Render initial state
         if self.render_enabled:
-            self.env.render(obs, action=None, reward=None, info=None)
+            self.env.render(obs, action=None, reward=None, info=None, reasoning=None)
 
         was_training_model = self.model.training
         was_training_value_head = self.value_head.training
@@ -360,7 +360,7 @@ class RLVRTrainer:
         
         # Render initial state
         if self.render_enabled:
-            self.env.render(obs, action=None, reward=None, info=None)
+            self.env.render(obs, action=None, reward=None, info=None, reasoning=None)
 
         if verbose or stream_enabled:
             header_parts = []
@@ -443,7 +443,7 @@ class RLVRTrainer:
             
             # Render game state after step
             if self.render_enabled:
-                self.env.render(obs, action=action, reward=reward, info=info)
+                self.env.render(obs, action=action, reward=reward, info=info, reasoning=reasoning)
 
             if log_rewards and self.wandb_run is not None:
                 self._wandb_log({"reward": reward})

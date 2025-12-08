@@ -395,6 +395,105 @@
             color: #666;
             margin-right: 8px;
         }
+
+        /* Structured log entries */
+        .log-entry-structured {
+            background: #1a1a1a;
+            border-left: 3px solid #4da6ff;
+            border-radius: 4px;
+            padding: 10px;
+            margin-bottom: 10px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        .log-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+            flex-wrap: wrap;
+        }
+
+        .action-badge {
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 0.75em;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .action-badge.hit-badge {
+            background: #28a745;
+            color: white;
+        }
+
+        .action-badge.stand-badge {
+            background: #dc3545;
+            color: white;
+        }
+
+        .result-badge {
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 0.75em;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+
+        .result-badge.result-win {
+            background: #28a745;
+            color: white;
+        }
+
+        .result-badge.result-lose {
+            background: #dc3545;
+            color: white;
+        }
+
+        .result-badge.result-draw {
+            background: #ffc107;
+            color: #000;
+        }
+
+        .reward-badge {
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 0.75em;
+            font-weight: bold;
+            font-family: 'Courier New', monospace;
+        }
+
+        .reward-badge.reward-positive {
+            background: #28a745;
+            color: white;
+        }
+
+        .reward-badge.reward-negative {
+            background: #dc3545;
+            color: white;
+        }
+
+        .reward-badge.reward-neutral {
+            background: #6c757d;
+            color: white;
+        }
+
+        .log-reasoning {
+            color: #ffd700;
+            font-style: italic;
+            margin: 8px 0;
+            padding-left: 10px;
+            border-left: 2px solid #ffd700;
+            font-size: 0.9em;
+        }
+
+        .log-state {
+            color: #888;
+            font-size: 0.85em;
+            margin-top: 6px;
+            font-family: 'Courier New', monospace;
+        }
     </style>
 </head>
 <body>

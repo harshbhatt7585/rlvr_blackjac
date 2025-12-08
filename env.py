@@ -199,7 +199,7 @@ response format:
         return prompt
 
     def render(self, obs: Optional[Dict] = None, action: Optional[int] = None, 
-               reward: Optional[float] = None, info: Optional[Dict] = None):
+               reward: Optional[float] = None, info: Optional[Dict] = None, reasoning: Optional[str] = None):
         """
         Render the current game state to the web frontend.
         
@@ -240,6 +240,7 @@ response format:
             'done': self.done,
             'action': action,
             'reward': reward,
+            'reasoning': reasoning,
             'info': info or {}
         }
         

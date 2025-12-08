@@ -17,7 +17,14 @@ if (typeof io !== 'undefined') {
     });
     
     socket.on('log', (logData) => {
-        addLog(logData.message, logData.level || 'info', logData.timestamp);
+        // Filter out verbose logs, only show important ones
+        const message = logData.message || '';
+        // Skip very verbose logs but keep important ones
+        if (message.includes('Action:') || message.includes('Reasoning:') || 
+            message.includes('Episode') || message.includes('Iteration') ||
+            message.includes('Win') || message.includes('Loss') || message.includes('Bust')) {
+            addLog(logData.message, logData.level || 'info', logData.timestamp);
+        }
     });
     
     socket.on('disconnect', () => {
@@ -41,7 +48,13 @@ if (typeof io !== 'undefined') {
             updateUIFromState(state);
         });
         socket.on('log', (logData) => {
-            addLog(logData.message, logData.level || 'info', logData.timestamp);
+            // Filter out verbose logs, only show important ones
+            const message = logData.message || '';
+            if (message.includes('Action:') || message.includes('Reasoning:') || 
+                message.includes('Episode') || message.includes('Iteration') ||
+                message.includes('Win') || message.includes('Loss') || message.includes('Bust')) {
+                addLog(logData.message, logData.level || 'info', logData.timestamp);
+            }
         });
     };
     document.head.appendChild(script);
@@ -253,19 +266,54 @@ function updateUIFromState(state) {
     
     updateUI();
     
-    // Show action and reward info if available
+    // Show action and reward info if available - create structured log entry
     if (state.action !== undefined && state.action !== null) {
         const actionName = state.action === 1 ? 'Hit' : 'Stand';
-        let message = `Action: ${actionName}`;
-        if (state.reward !== undefined && state.reward !== null) {
-            message += ` | Reward: ${state.reward.toFixed(2)}`;
-        }
-        if (state.done) {
+        const reasoning = state.reasoning || null;
+        const reward = state.reward !== undefined && state.reward !== null ? state.reward : null;
+        const isDone = state.done || false;
+        
+        // Determine result
+        let result = null;
+        let resultType = 'info';
+        if (isDone) {
             if (state.info && state.info.result === 'bust') {
+                result = 'Bust';
+                resultType = 'lose';
+            } else if (reward > 0) {
+                result = 'Win';
+                resultType = 'win';
+            } else if (reward < 0) {
+                result = 'Loss';
+                resultType = 'lose';
+            } else {
+                result = 'Draw';
+                resultType = 'draw';
+            }
+        }
+        
+        // Create structured log entry
+        addStructuredLog({
+            action: actionName,
+            reasoning: reasoning,
+            result: result,
+            reward: reward,
+            playerSum: state.player_sum,
+            dealerVisible: state.dealer_visible,
+            resultType: resultType
+        });
+        
+        // Also update message for compatibility
+        let message = `Action: ${actionName}`;
+        if (reward !== null) {
+            message += ` | Reward: ${reward.toFixed(2)}`;
+        }
+        if (isDone) {
+            if (result === 'Bust') {
                 updateMessage(`Bust! ${message}`, 'lose');
-            } else if (state.reward > 0) {
+            } else if (result === 'Win') {
                 updateMessage(`Win! ${message}`, 'win');
-            } else if (state.reward < 0) {
+            } else if (result === 'Loss') {
                 updateMessage(`Loss! ${message}`, 'lose');
             } else {
                 updateMessage(`Draw! ${message}`, 'draw');
@@ -479,6 +527,49 @@ function newGame() {
 }
 
 // Log management functions
+function addStructuredLog(data) {
+    const logsContent = document.getElementById('logsContent');
+    if (!logsContent) return;
+    
+    // Remove "Waiting for logs..." if it exists
+    if (logsContent.children.length === 1 && logsContent.children[0].textContent.includes('Waiting for logs')) {
+        logsContent.innerHTML = '';
+    }
+    
+    const logEntry = document.createElement('div');
+    logEntry.className = 'log-entry-structured';
+    
+    const timeStr = new Date().toLocaleTimeString();
+    const actionBadge = data.action === 'Hit' ? 'hit-badge' : 'stand-badge';
+    const resultBadge = data.result ? `result-${data.resultType}` : '';
+    
+    let html = `
+        <div class="log-header">
+            <span class="log-timestamp">[${timeStr}]</span>
+            <span class="action-badge ${actionBadge}">${data.action}</span>
+            ${data.result ? `<span class="result-badge ${resultBadge}">${data.result}</span>` : ''}
+            ${data.reward !== null ? `<span class="reward-badge ${data.reward > 0 ? 'reward-positive' : data.reward < 0 ? 'reward-negative' : 'reward-neutral'}">${data.reward > 0 ? '+' : ''}${data.reward.toFixed(2)}</span>` : ''}
+        </div>
+    `;
+    
+    if (data.reasoning) {
+        html += `<div class="log-reasoning">💭 ${escapeHtml(data.reasoning)}</div>`;
+    }
+    
+    html += `<div class="log-state">Player: ${data.playerSum} | Dealer shows: ${data.dealerVisible !== undefined ? data.dealerVisible : '?'}</div>`;
+    
+    logEntry.innerHTML = html;
+    logsContent.appendChild(logEntry);
+    
+    // Auto-scroll to bottom
+    logsContent.scrollTop = logsContent.scrollHeight;
+    
+    // Limit to 500 structured log entries to prevent memory issues
+    if (logsContent.children.length > 500) {
+        logsContent.removeChild(logsContent.firstChild);
+    }
+}
+
 function addLog(message, level = 'info', timestamp = null) {
     const logsContent = document.getElementById('logsContent');
     if (!logsContent) return;
