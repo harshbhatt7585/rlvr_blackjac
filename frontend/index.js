@@ -114,13 +114,21 @@ class BlackjackGame {
         return card.toString();
     }
 
-    cardToDisplay(card) {
-        if (card === 1) return { value: 'A', suit: '♠' };
+    cardToDisplay(card, index = 0) {
+        // Assign suits deterministically for variety: Spades, Hearts, Diamonds, Clubs
+        // Use a combination of card value and index to distribute suits evenly
+        const suits = ['♠', '♥', '♦', '♣'];
+        // Create variety: use card value * 3 + index to spread suits
+        const suitIndex = (card * 3 + index * 7) % 4;
+        const suit = suits[suitIndex];
+        const isRed = suit === '♥' || suit === '♦';
+        
+        if (card === 1) return { value: 'A', suit: suit, color: isRed ? 'red' : 'black' };
         if (card >= 11) {
             const faces = ['J', 'Q', 'K'];
-            return { value: faces[(card - 11) % 3], suit: '♠' };
+            return { value: faces[(card - 11) % 3], suit: suit, color: isRed ? 'red' : 'black' };
         }
-        return { value: card.toString(), suit: '♠' };
+        return { value: card.toString(), suit: suit, color: isRed ? 'red' : 'black' };
     }
 
     reset() {
@@ -287,7 +295,7 @@ function updateUI() {
     if (isNewPlayerCard || playerCardsContainer.children.length !== currentPlayerCardCount) {
         playerCardsContainer.innerHTML = '';
         game.playerCards.forEach((card, index) => {
-            const cardEl = createCardElement(card, false);
+            const cardEl = createCardElement(card, false, index);
             // Animate new cards
             if (index >= previousPlayerCardCount) {
                 cardEl.classList.add('deal');
@@ -313,7 +321,7 @@ function updateUI() {
             // If card is being revealed, start as hidden
             const shouldStartHidden = dealerCardRevealed && index === 1;
             const isHidden = !game.done && index === 1;
-            const cardEl = createCardElement(card, shouldStartHidden || isHidden);
+            const cardEl = createCardElement(card, shouldStartHidden || isHidden, index);
             
             // Animate new dealer cards
             if (index >= previousDealerCardCount) {
@@ -330,11 +338,12 @@ function updateUI() {
                     cardEl.classList.add('flip-reveal');
                     // Update card content mid-flip (at 50% of animation)
                     setTimeout(() => {
-                        const cardDisplay = game.cardToDisplay(card);
+                        const cardDisplay = game.cardToDisplay(card, index);
+                        const colorClass = cardDisplay.color === 'red' ? ' red' : '';
                         cardEl.classList.remove('hidden');
                         cardEl.innerHTML = `
-                            <div class="card-value">${cardDisplay.value}</div>
-                            <div class="card-suit">${cardDisplay.suit}</div>
+                            <div class="card-value${colorClass}">${cardDisplay.value}</div>
+                            <div class="card-suit${colorClass}">${cardDisplay.suit}</div>
                         `;
                     }, 400);
                 }, 500);
@@ -381,17 +390,18 @@ function updateUI() {
     document.getElementById('losses').textContent = game.losses;
 }
 
-function createCardElement(card, isHidden) {
+function createCardElement(card, isHidden, cardIndex = 0) {
     const cardDiv = document.createElement('div');
     cardDiv.className = 'card' + (isHidden ? ' hidden' : '');
     
     if (isHidden) {
         cardDiv.innerHTML = '<div class="card-value">?</div><div class="card-suit">?</div>';
     } else {
-        const cardDisplay = game.cardToDisplay(card);
+        const cardDisplay = game.cardToDisplay(card, cardIndex);
+        const colorClass = cardDisplay.color === 'red' ? ' red' : '';
         cardDiv.innerHTML = `
-            <div class="card-value">${cardDisplay.value}</div>
-            <div class="card-suit">${cardDisplay.suit}</div>
+            <div class="card-value${colorClass}">${cardDisplay.value}</div>
+            <div class="card-suit${colorClass}">${cardDisplay.suit}</div>
         `;
     }
     
