@@ -207,15 +207,31 @@ class BlackjackGame {
 // Game instance (for standalone mode)
 const game = new BlackjackGame();
 
+// Track previous card counts for animation
+let previousPlayerCardCount = 0;
+let previousDealerCardCount = 0;
+let previousDealerDone = false;
+
 // UI Update functions
 function updateUIFromState(state) {
     // Update from Python environment state
+    const oldPlayerCount = game.playerCards.length;
+    const oldDealerCount = game.dealerCards.length;
+    const oldDone = game.done;
+    
     game.playerCards = state.player_cards || [];
     game.dealerCards = state.dealer_cards || [];
     game.playerSum = state.player_sum || 0;
     game.dealerSum = state.dealer_sum || 0;
     game.usableAce = state.usable_ace || false;
     game.done = state.done || false;
+    
+    // Reset previous counts if cards were reset (new game)
+    if (game.playerCards.length < oldPlayerCount || game.dealerCards.length < oldDealerCount) {
+        previousPlayerCardCount = 0;
+        previousDealerCardCount = 0;
+        previousDealerDone = false;
+    }
     
     updateUI();
     
@@ -254,22 +270,79 @@ function updateUI() {
         document.getElementById('dealerVisible').textContent = game.cardToString(dealerVisible);
     }
     
-    // Update player cards
-    const playerCardsContainer = document.getElementById('playerCards');
-    playerCardsContainer.innerHTML = '';
-    game.playerCards.forEach(card => {
-        const cardEl = createCardElement(card, false);
-        playerCardsContainer.appendChild(cardEl);
-    });
+    // Check if dealer's hidden card should be revealed
+    const dealerCardRevealed = game.done && !previousDealerDone && previousDealerCardCount >= 2;
     
-    // Update dealer cards
+    // Update player cards with animation
+    const playerCardsContainer = document.getElementById('playerCards');
+    const currentPlayerCardCount = game.playerCards.length;
+    const isNewPlayerCard = currentPlayerCardCount > previousPlayerCardCount;
+    
+    // Only rebuild if card count changed
+    if (isNewPlayerCard || playerCardsContainer.children.length !== currentPlayerCardCount) {
+        playerCardsContainer.innerHTML = '';
+        game.playerCards.forEach((card, index) => {
+            const cardEl = createCardElement(card, false);
+            // Animate new cards
+            if (index >= previousPlayerCardCount) {
+                cardEl.classList.add('deal');
+                // Add flip animation with delay
+                setTimeout(() => {
+                    cardEl.classList.add('flip-in');
+                }, index * 100);
+            }
+            playerCardsContainer.appendChild(cardEl);
+        });
+    }
+    
+    // Update dealer cards with animation
     const dealerCardsContainer = document.getElementById('dealerCards');
-    dealerCardsContainer.innerHTML = '';
-    game.dealerCards.forEach((card, index) => {
-        const isHidden = !game.done && index === 1;
-        const cardEl = createCardElement(card, isHidden);
-        dealerCardsContainer.appendChild(cardEl);
-    });
+    const currentDealerCardCount = game.dealerCards.length;
+    const isNewDealerCard = currentDealerCardCount > previousDealerCardCount;
+    const shouldRebuildDealer = isNewDealerCard || dealerCardRevealed || 
+                                 dealerCardsContainer.children.length !== currentDealerCardCount;
+    
+    if (shouldRebuildDealer) {
+        dealerCardsContainer.innerHTML = '';
+        game.dealerCards.forEach((card, index) => {
+            // If card is being revealed, start as hidden
+            const shouldStartHidden = dealerCardRevealed && index === 1;
+            const isHidden = !game.done && index === 1;
+            const cardEl = createCardElement(card, shouldStartHidden || isHidden);
+            
+            // Animate new dealer cards
+            if (index >= previousDealerCardCount) {
+                cardEl.classList.add('deal');
+                setTimeout(() => {
+                    cardEl.classList.add('flip-in');
+                }, index * 100);
+            }
+            
+            // Animate hidden card reveal when game ends
+            if (dealerCardRevealed && index === 1) {
+                // Wait a bit, then flip to reveal
+                setTimeout(() => {
+                    cardEl.classList.add('flip-reveal');
+                    // Update card content mid-flip (at 50% of animation)
+                    setTimeout(() => {
+                        const cardDisplay = game.cardToDisplay(card);
+                        cardEl.classList.remove('hidden');
+                        cardEl.innerHTML = `
+                            <div class="card-value">${cardDisplay.value}</div>
+                            <div class="card-suit">${cardDisplay.suit}</div>
+                        `;
+                    }, 400);
+                }, 500);
+            }
+            
+            dealerCardsContainer.appendChild(cardEl);
+        });
+    }
+    
+    // Update previous counts
+    previousPlayerCardCount = currentPlayerCardCount;
+    previousDealerCardCount = currentDealerCardCount;
+    previousDealerDone = game.done;
     
     // Update dealer total
     if (game.done && game.dealerSum !== undefined) {
@@ -290,14 +363,19 @@ function updateUI() {
         statusEl.textContent = isWebSocketMode ? 'Training...' : 'Your Turn';
     }
     
-    // Update buttons (disable in WebSocket mode)
+    // Update buttons (disable in WebSocket mode) - only if buttons exist
     if (isWebSocketMode) {
-        document.getElementById('hitBtn').disabled = true;
-        document.getElementById('standBtn').disabled = true;
-        document.getElementById('newGameBtn').disabled = true;
+        const hitBtn = document.getElementById('hitBtn');
+        const standBtn = document.getElementById('standBtn');
+        const newGameBtn = document.getElementById('newGameBtn');
+        if (hitBtn) hitBtn.disabled = true;
+        if (standBtn) standBtn.disabled = true;
+        if (newGameBtn) newGameBtn.disabled = true;
     } else {
-        document.getElementById('hitBtn').disabled = game.done;
-        document.getElementById('standBtn').disabled = game.done;
+        const hitBtn = document.getElementById('hitBtn');
+        const standBtn = document.getElementById('standBtn');
+        if (hitBtn) hitBtn.disabled = game.done;
+        if (standBtn) standBtn.disabled = game.done;
     }
     
     // Update stats (only in standalone mode)
@@ -327,8 +405,14 @@ function createCardElement(card, isHidden) {
 
 function updateMessage(text, type = 'info') {
     const messageEl = document.getElementById('message');
-    messageEl.textContent = text;
-    messageEl.className = `message ${type}`;
+    if (messageEl) {
+        messageEl.textContent = text;
+        messageEl.className = `message ${type}`;
+    }
+    // Also log important messages
+    if (type !== 'info' || text.includes('Connected') || text.includes('Disconnected')) {
+        addLog(text, type);
+    }
 }
 
 function handleHit() {
@@ -382,6 +466,10 @@ function handleStand() {
 
 function newGame() {
     if (isWebSocketMode) return;
+    // Reset previous counts for animation
+    previousPlayerCardCount = 0;
+    previousDealerCardCount = 0;
+    previousDealerDone = false;
     game.reset();
     updateUI();
     updateMessage('New game started! Make your move.', 'info');
@@ -429,6 +517,14 @@ function escapeHtml(text) {
 
 // Initialize
 if (!isWebSocketMode) {
+    // Reset previous counts for initial render
+    previousPlayerCardCount = 0;
+    previousDealerCardCount = 0;
+    previousDealerDone = false;
     updateUI();
 } else {
+    // Reset previous counts for WebSocket mode
+    previousPlayerCardCount = 0;
+    previousDealerCardCount = 0;
+    previousDealerDone = false;
 }

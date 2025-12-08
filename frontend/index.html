@@ -17,16 +17,40 @@
             min-height: 100vh;
             display: flex;
             padding: 20px;
+            gap: 20px;
+            justify-content: center;
+            align-items: flex-start;
         }
 
         .game-container {
             display: flex;
+            gap: 20px;
+            width: 100%;
+            max-width: 1400px;
+        }
+
+        @media (max-width: 1200px) {
+            body {
+                flex-direction: column;
+            }
+            
+            .game-container {
+                flex-direction: column;
+            }
+            
+            .logs-container {
+                flex: 1;
+                max-width: 100%;
+            }
+        }
+
+        .game-ui {
+            flex: 1;
             background: white;
             border-radius: 20px;
             box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
             padding: 40px;
-            max-width: 800px;
-            width: 100%;
+            min-width: 0;
         }
 
         h1 {
@@ -105,6 +129,8 @@
             font-weight: bold;
             box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
             transition: transform 0.2s;
+            transform-style: preserve-3d;
+            position: relative;
         }
 
         .card:hover {
@@ -115,6 +141,60 @@
             background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%);
             color: white;
             border-color: #2c3e50;
+        }
+
+        /* Card flip animation */
+        .card.flip-in {
+            animation: flipIn 0.6s ease-in-out;
+        }
+
+        .card.flip-reveal {
+            animation: flipReveal 0.8s ease-in-out;
+        }
+
+        @keyframes flipIn {
+            0% {
+                transform: rotateY(-90deg) scale(0.8);
+                opacity: 0;
+            }
+            50% {
+                transform: rotateY(0deg) scale(1.1);
+            }
+            100% {
+                transform: rotateY(0deg) scale(1);
+                opacity: 1;
+            }
+        }
+
+        @keyframes flipReveal {
+            0% {
+                transform: rotateY(0deg);
+            }
+            50% {
+                transform: rotateY(90deg) scale(1.1);
+            }
+            100% {
+                transform: rotateY(0deg) scale(1);
+            }
+        }
+
+        /* Card deal animation */
+        .card.deal {
+            animation: dealCard 0.5s ease-out;
+        }
+
+        @keyframes dealCard {
+            0% {
+                transform: translateY(-200px) rotate(-10deg);
+                opacity: 0;
+            }
+            60% {
+                transform: translateY(10px) rotate(5deg);
+            }
+            100% {
+                transform: translateY(0) rotate(0deg);
+                opacity: 1;
+            }
         }
 
         .card-value {
@@ -253,13 +333,14 @@
         }
 
         .logs-container {
-            margin-left: 30px;
+            flex: 0 0 400px;
             background: #1e1e1e;
             border-radius: 10px;
             padding: 15px;
-            max-height: 400px;
             display: flex;
             flex-direction: column;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-height: calc(100vh - 40px);
         }
 
         .logs-header {
@@ -270,6 +351,10 @@
             color: #fff;
             font-weight: bold;
             font-size: 1em;
+        }
+
+        .logs-header span {
+            color: #fff;
         }
 
         .btn-clear-logs {
@@ -296,7 +381,7 @@
             font-family: 'Courier New', monospace;
             font-size: 0.85em;
             line-height: 1.4;
-            max-height: 350px;
+            min-height: 0;
         }
 
         .log-entry {
@@ -381,6 +466,8 @@
 
         <div class="logs-container">
             <div class="logs-header">
+                <span>Training Logs</span>
+                <button class="btn-clear-logs" id="clearLogsBtn" onclick="clearLogs()">Clear</button>
             </div>
             <div class="logs-content" id="logsContent">
                 <div class="log-entry">Waiting for logs...</div>
