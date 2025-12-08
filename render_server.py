@@ -4,13 +4,15 @@ Provides WebSocket connection for real-time game state updates.
 """
 import os
 import json
+import logging
+import datetime
 from flask import Flask, send_from_directory
 from flask_socketio import SocketIO, emit
 from threading import Lock
 
 app = Flask(__name__, static_folder='frontend')
 app.config['SECRET_KEY'] = 'blackjack-render-secret'
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # Thread-safe state management
 render_lock = Lock()
@@ -70,6 +72,74 @@ def disable_rendering():
 def is_rendering_enabled():
     """Check if rendering is enabled."""
     return render_enabled
+
+def send_log(message, level='info'):
+    """
+    Send a log message to all connected clients.
+    
+    Args:
+        message: Log message string
+        level: Log level (info, warning, error, debug)
+    """
+    try:
+        log_data = {
+            'message': message,
+            'level': level,
+            'timestamp': datetime.datetime.now().isoformat()
+        }
+        # Emit to all clients (broadcasts by default when no room is specified)
+        socketio.emit('log', log_data)
+    except Exception as e:
+        # Fallback to print if emit fails
+        print(f"Failed to send log via WebSocket: {e}")
+
+class WebSocketLogHandler(logging.Handler):
+    """Custom logging handler that sends logs to WebSocket clients."""
+    
+    def emit(self, record):
+        """Emit a log record to WebSocket clients."""
+        try:
+            log_message = self.format(record)
+            level = record.levelname.lower()
+            if level not in ['info', 'warning', 'error', 'debug']:
+                level = 'info'
+            send_log(log_message, level)
+        except Exception:
+            # Ignore errors in logging handler to prevent recursion
+            pass
+
+class PrintCapture:
+    """Capture print statements and send them to WebSocket clients."""
+    
+    def __init__(self, original_print):
+        self.original_print = original_print
+        self.buffer = []
+    
+    def __call__(self, *args, **kwargs):
+        # Call original print
+        self.original_print(*args, **kwargs)
+        
+        # Capture and send to WebSocket
+        try:
+            message = ' '.join(str(arg) for arg in args)
+            if message.strip():  # Only send non-empty messages
+                send_log(message, 'info')
+        except Exception:
+            pass  # Ignore errors to prevent recursion
+
+def setup_logging_handler():
+    """Set up the WebSocket logging handler."""
+    handler = WebSocketLogHandler()
+    handler.setFormatter(logging.Formatter('[%(asctime)s] %(levelname)s - %(message)s', datefmt='%H:%M:%S'))
+    handler.setLevel(logging.INFO)
+    return handler
+
+def setup_print_capture():
+    """Set up print statement capture."""
+    import builtins
+    original_print = builtins.print
+    builtins.print = PrintCapture(original_print)
+    return original_print
 
 def run_server(host='127.0.0.1', port=5000, debug=False):
     """Run the Flask-SocketIO server."""

@@ -22,6 +22,7 @@
         }
 
         .game-container {
+            display: flex;
             background: white;
             border-radius: 20px;
             box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
@@ -252,61 +253,150 @@
             font-weight: bold;
             color: #0f4c3a;
         }
+
+        .logs-container {
+            margin-top: 30px;
+            background: #1e1e1e;
+            border-radius: 10px;
+            padding: 15px;
+            max-height: 400px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .logs-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+            color: #fff;
+            font-weight: bold;
+            font-size: 1em;
+        }
+
+        .btn-clear-logs {
+            padding: 5px 15px;
+            font-size: 0.85em;
+            background: #dc3545;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        .btn-clear-logs:hover {
+            background: #c82333;
+        }
+
+        .logs-content {
+            background: #000;
+            border-radius: 5px;
+            padding: 10px;
+            overflow-y: auto;
+            flex: 1;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85em;
+            line-height: 1.4;
+            max-height: 350px;
+        }
+
+        .log-entry {
+            color: #00ff00;
+            margin-bottom: 3px;
+            word-wrap: break-word;
+        }
+
+        .log-entry.info {
+            color: #4da6ff;
+        }
+
+        .log-entry.warning {
+            color: #ffaa00;
+        }
+
+        .log-entry.error {
+            color: #ff4444;
+        }
+
+        .log-entry.debug {
+            color: #888888;
+        }
+
+        .log-timestamp {
+            color: #666;
+            margin-right: 8px;
+        }
     </style>
 </head>
 <body>
     <div class="game-container">
-        <h1>🃏 Blackjack 🃏</h1>
-        
-        <div class="game-info">
-            <div class="info-item">
-                <div class="info-label">Your Total</div>
-                <div class="info-value" id="playerTotal">-</div>
+        <div class="game-ui">
+            <h1>🃏 Blackjack 🃏</h1>
+            
+            <div class="game-info">
+                <div class="info-item">
+                    <div class="info-label">Your Total</div>
+                    <div class="info-value" id="playerTotal">-</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Dealer Shows</div>
+                    <div class="info-value" id="dealerVisible">-</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Status</div>
+                    <div class="info-value" id="gameStatus">Ready</div>
+                </div>
             </div>
-            <div class="info-item">
-                <div class="info-label">Dealer Shows</div>
-                <div class="info-value" id="dealerVisible">-</div>
+
+            <div class="hands-container">
+                <div class="hand-section">
+                    <div class="hand-label">Dealer's Hand</div>
+                    <div class="cards-container" id="dealerCards"></div>
+                    <div class="hand-total" id="dealerTotal"></div>
+                </div>
+
+                <div class="hand-section">
+                    <div class="hand-label">Your Hand</div>
+                    <div class="cards-container" id="playerCards"></div>
+                    <div class="hand-total" id="playerTotalDisplay"></div>
+                </div>
             </div>
-            <div class="info-item">
-                <div class="info-label">Status</div>
-                <div class="info-value" id="gameStatus">Ready</div>
+
+            <div class="controls">
+                <button class="btn-hit" id="hitBtn" onclick="handleHit()">Hit</button>
+                <button class="btn-stand" id="standBtn" onclick="handleStand()">Stand</button>
+                <button class="btn-new-game" id="newGameBtn" onclick="newGame()">New Game</button>
+            </div>
+
+            <div class="message info" id="message">Click "New Game" to start playing!</div>
+
+       
+
+            <div class="stats">
+                <div class="stat-item">
+                    <div class="stat-label">Games Played</div>
+                    <div class="stat-value" id="gamesPlayed">0</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Wins</div>
+                    <div class="stat-value" id="wins">0</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Losses</div>
+                    <div class="stat-value" id="losses">0</div>
+                </div>
             </div>
         </div>
+    </div>
 
-        <div class="hands-container">
-            <div class="hand-section">
-                <div class="hand-label">Dealer's Hand</div>
-                <div class="cards-container" id="dealerCards"></div>
-                <div class="hand-total" id="dealerTotal"></div>
+        <div class="logs-container">
+            <div class="logs-header">
+                <span>Training Logs</span>
+                <button class="btn-clear-logs" id="clearLogsBtn" onclick="clearLogs()">Clear</button>
             </div>
-
-            <div class="hand-section">
-                <div class="hand-label">Your Hand</div>
-                <div class="cards-container" id="playerCards"></div>
-                <div class="hand-total" id="playerTotalDisplay"></div>
-            </div>
-        </div>
-
-        <div class="controls">
-            <button class="btn-hit" id="hitBtn" onclick="handleHit()">Hit</button>
-            <button class="btn-stand" id="standBtn" onclick="handleStand()">Stand</button>
-            <button class="btn-new-game" id="newGameBtn" onclick="newGame()">New Game</button>
-        </div>
-
-        <div class="message info" id="message">Click "New Game" to start playing!</div>
-
-        <div class="stats">
-            <div class="stat-item">
-                <div class="stat-label">Games Played</div>
-                <div class="stat-value" id="gamesPlayed">0</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-label">Wins</div>
-                <div class="stat-value" id="wins">0</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-label">Losses</div>
-                <div class="stat-value" id="losses">0</div>
+            <div class="logs-content" id="logsContent">
+                <div class="log-entry">Waiting for logs...</div>
             </div>
         </div>
     </div>

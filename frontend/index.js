@@ -1,6 +1,3 @@
-// Blackjack game implementation - supports both standalone and WebSocket modes
-
-// Check if socket.io is available (WebSocket mode)
 let socket = null;
 let isWebSocketMode = false;
 
@@ -13,15 +10,21 @@ if (typeof io !== 'undefined') {
         console.log('Connected to render server');
         updateMessage('Connected to training render server. Waiting for game state...', 'info');
         document.getElementById('gameStatus').textContent = 'Connected';
+        addLog('Connected to training render server', 'info');
     });
     
     socket.on('game_state', (state) => {
         updateUIFromState(state);
     });
     
+    socket.on('log', (logData) => {
+        addLog(logData.message, logData.level || 'info', logData.timestamp);
+    });
+    
     socket.on('disconnect', () => {
         console.log('Disconnected from render server');
         updateMessage('Disconnected from render server', 'info');
+        addLog('Disconnected from render server', 'warning');
     });
 } else {
     // Standalone mode - load socket.io library dynamically
@@ -33,9 +36,13 @@ if (typeof io !== 'undefined') {
             isWebSocketMode = true;
             console.log('Connected to render server');
             updateMessage('Connected to training render server. Waiting for game state...', 'info');
+            addLog('Connected to training render server', 'info');
         });
         socket.on('game_state', (state) => {
             updateUIFromState(state);
+        });
+        socket.on('log', (logData) => {
+            addLog(logData.message, logData.level || 'info', logData.timestamp);
         });
     };
     document.head.appendChild(script);
@@ -378,6 +385,46 @@ function newGame() {
     game.reset();
     updateUI();
     updateMessage('New game started! Make your move.', 'info');
+}
+
+// Log management functions
+function addLog(message, level = 'info', timestamp = null) {
+    const logsContent = document.getElementById('logsContent');
+    if (!logsContent) return;
+    
+    // Remove "Waiting for logs..." if it exists
+    if (logsContent.children.length === 1 && logsContent.children[0].textContent.includes('Waiting for logs')) {
+        logsContent.innerHTML = '';
+    }
+    
+    const logEntry = document.createElement('div');
+    logEntry.className = `log-entry ${level}`;
+    
+    const timeStr = timestamp ? new Date(timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
+    logEntry.innerHTML = `<span class="log-timestamp">[${timeStr}]</span>${escapeHtml(message)}`;
+    
+    logsContent.appendChild(logEntry);
+    
+    // Auto-scroll to bottom
+    logsContent.scrollTop = logsContent.scrollHeight;
+    
+    // Limit to 1000 log entries to prevent memory issues
+    if (logsContent.children.length > 1000) {
+        logsContent.removeChild(logsContent.firstChild);
+    }
+}
+
+function clearLogs() {
+    const logsContent = document.getElementById('logsContent');
+    if (logsContent) {
+        logsContent.innerHTML = '<div class="log-entry">Logs cleared</div>';
+    }
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
 }
 
 // Initialize

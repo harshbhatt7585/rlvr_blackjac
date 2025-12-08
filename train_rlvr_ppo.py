@@ -28,7 +28,7 @@ from env import BlackjackEnv
 
 # Import render server if rendering is enabled
 
-from render_server import update_game_state, enable_rendering, run_server
+from render_server import update_game_state, enable_rendering, run_server, setup_logging_handler, setup_print_capture
 from threading import Thread
 RENDER_AVAILABLE = True
 
@@ -138,8 +138,17 @@ class RLVRTrainer:
                 daemon=True
             )
             self.render_thread.start()
+            # Give server a moment to start
+            import time
+            time.sleep(1)
             # Set render callback
             self.env.set_render_callback(update_game_state)
+            # Add WebSocket log handler to send logs to frontend
+            ws_handler = setup_logging_handler()
+            logging.getLogger().addHandler(ws_handler)
+            # Capture print statements as well
+            setup_print_capture()
+            self.logger.info("WebSocket logging enabled - logs will appear in frontend")
         elif config.enable_render and not RENDER_AVAILABLE:
             self.logger.warning("Rendering requested but render_server not available. Install flask-socketio to enable rendering.")
         
