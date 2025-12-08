@@ -233,24 +233,22 @@ function updateUIFromState(state) {
     game.usableAce = state.usable_ace || false;
     game.done = state.done || false;
     
-    // Reset previous counts if cards were reset (new game)
-    if (game.playerCards.length < oldPlayerCount || game.dealerCards.length < oldDealerCount) {
-        previousPlayerCardCount = 0;
-        previousDealerCardCount = 0;
-        previousDealerDone = false;
-        // Increment games played when new game starts
-        if (oldPlayerCount > 0 || oldDealerCount > 0) {
-            game.gamesPlayed++;
-        }
-    }
-    
-    // Track wins/losses from game results
+    // Track wins/losses from game results (check when game ends)
     if (state.done && !oldDone && state.reward !== undefined && state.reward !== null) {
         if (state.reward > 0) {
             game.wins++;
         } else if (state.reward < 0) {
             game.losses++;
         }
+        // Increment games played when a game completes
+        game.gamesPlayed++;
+    }
+    
+    // Reset previous counts if cards were reset (new game started)
+    if (game.playerCards.length < oldPlayerCount || game.dealerCards.length < oldDealerCount) {
+        previousPlayerCardCount = 0;
+        previousDealerCardCount = 0;
+        previousDealerDone = false;
     }
     
     updateUI();
