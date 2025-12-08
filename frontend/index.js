@@ -9,7 +9,6 @@ if (typeof io !== 'undefined') {
     socket.on('connect', () => {
         console.log('Connected to render server');
         updateMessage('Connected to training render server. Waiting for game state...', 'info');
-        document.getElementById('gameStatus').textContent = 'Connected';
         addLog('Connected to training render server', 'info');
     });
     
@@ -231,6 +230,19 @@ function updateUIFromState(state) {
         previousPlayerCardCount = 0;
         previousDealerCardCount = 0;
         previousDealerDone = false;
+        // Increment games played when new game starts
+        if (oldPlayerCount > 0 || oldDealerCount > 0) {
+            game.gamesPlayed++;
+        }
+    }
+    
+    // Track wins/losses from game results
+    if (state.done && !oldDone && state.reward !== undefined && state.reward !== null) {
+        if (state.reward > 0) {
+            game.wins++;
+        } else if (state.reward < 0) {
+            game.losses++;
+        }
     }
     
     updateUI();
@@ -259,16 +271,9 @@ function updateUIFromState(state) {
 }
 
 function updateUI() {
-    // Update player total
-    document.getElementById('playerTotal').textContent = game.playerSum;
+    // Update player total display
     document.getElementById('playerTotalDisplay').textContent = 
         `Total: ${game.playerSum}${game.usableAce ? ' (with usable ace)' : ''}`;
-    
-    // Update dealer visible card
-    const dealerVisible = game.dealerCards[0];
-    if (dealerVisible !== undefined) {
-        document.getElementById('dealerVisible').textContent = game.cardToString(dealerVisible);
-    }
     
     // Check if dealer's hidden card should be revealed
     const dealerCardRevealed = game.done && !previousDealerDone && previousDealerCardCount >= 2;
@@ -355,14 +360,6 @@ function updateUI() {
         }
     }
     
-    // Update game status
-    const statusEl = document.getElementById('gameStatus');
-    if (game.done) {
-        statusEl.textContent = 'Game Over';
-    } else {
-        statusEl.textContent = isWebSocketMode ? 'Training...' : 'Your Turn';
-    }
-    
     // Update buttons (disable in WebSocket mode) - only if buttons exist
     if (isWebSocketMode) {
         const hitBtn = document.getElementById('hitBtn');
@@ -378,12 +375,10 @@ function updateUI() {
         if (standBtn) standBtn.disabled = game.done;
     }
     
-    // Update stats (only in standalone mode)
-    if (!isWebSocketMode) {
-        document.getElementById('gamesPlayed').textContent = game.gamesPlayed;
-        document.getElementById('wins').textContent = game.wins;
-        document.getElementById('losses').textContent = game.losses;
-    }
+    // Update stats in the top game-info section
+    document.getElementById('gamesPlayed').textContent = game.gamesPlayed;
+    document.getElementById('wins').textContent = game.wins;
+    document.getElementById('losses').textContent = game.losses;
 }
 
 function createCardElement(card, isHidden) {
