@@ -430,7 +430,5 @@ function escapeHtml(text) {
 // Initialize
 if (!isWebSocketMode) {
     updateUI();
-    updateMessage('Click "New Game" to start playing!', 'info');
 } else {
-    updateMessage('Connected to training render server. Waiting for game state...', 'info');
 }
